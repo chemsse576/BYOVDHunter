@@ -1,0 +1,8 @@
+bin/
+obj/
+*.exe
+*.json
+!BYOVDHunter.csproj
+*.user
+*.suo
+.vs/
