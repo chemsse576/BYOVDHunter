@@ -53,18 +53,18 @@ namespace BYOVDHunter
             {"SeCaptureSubjectContext", ("TokenManip", "Capture security context")},
 
             // Kernel callback manipulation (EDR blinding)
-            {"PsSetCreateProcessNotifyRoutine", ("CallbackManip", "Register/unregister process callbacks")},
-            {"PsSetCreateProcessNotifyRoutineEx", ("CallbackManip", "Register/unregister process callbacks (Ex)")},
-            {"PsSetCreateThreadNotifyRoutine", ("CallbackManip", "Register/unregister thread callbacks")},
-            {"PsSetCreateThreadNotifyRoutineEx", ("CallbackManip", "Register/unregister thread callbacks (Ex)")},
-            {"PsSetLoadImageNotifyRoutine", ("CallbackManip", "Register/unregister image load callbacks")},
-            {"PsSetLoadImageNotifyRoutineEx", ("CallbackManip", "Register/unregister image load callbacks (Ex)")},
-            {"CmRegisterCallback", ("CallbackManip", "Register registry callback")},
-            {"CmRegisterCallbackEx", ("CallbackManip", "Register registry callback (Ex)")},
-            {"CmUnRegisterCallback", ("CallbackManip", "UNREGISTER registry callback - can blind EDR")},
-            {"ObRegisterCallbacks", ("CallbackManip", "Register object callbacks")},
-            {"ObUnRegisterCallbacks", ("CallbackManip", "UNREGISTER object callbacks - can blind EDR")},
-            {"FltUnregisterFilter", ("CallbackManip", "Unregister minifilter - can blind filesystem EDR")},
+            {"PsSetCreateProcessNotifyRoutine", ("CallbackReg", "Register/unregister process callbacks")},
+            {"PsSetCreateProcessNotifyRoutineEx", ("CallbackReg", "Register/unregister process callbacks (Ex)")},
+            {"PsSetCreateThreadNotifyRoutine", ("CallbackReg", "Register/unregister thread callbacks")},
+            {"PsSetCreateThreadNotifyRoutineEx", ("CallbackReg", "Register/unregister thread callbacks (Ex)")},
+            {"PsSetLoadImageNotifyRoutine", ("CallbackReg", "Register/unregister image load callbacks")},
+            {"PsSetLoadImageNotifyRoutineEx", ("CallbackReg", "Register/unregister image load callbacks (Ex)")},
+            {"CmRegisterCallback", ("CallbackReg", "Register registry callback")},
+            {"CmRegisterCallbackEx", ("CallbackReg", "Register registry callback (Ex)")},
+            {"CmUnRegisterCallback", ("CallbackUnreg", "UNREGISTER registry callback - can blind EDR")},
+            {"ObRegisterCallbacks", ("CallbackReg", "Register object callbacks")},
+            {"ObUnRegisterCallbacks", ("CallbackUnreg", "UNREGISTER object callbacks - can blind EDR")},
+            {"FltUnregisterFilter", ("CallbackUnreg", "Unregister minifilter - can blind filesystem EDR")},
 
             // I/O port access (firmware/BIOS)
             {"READ_PORT_UCHAR", ("IoPort", "Read I/O port (byte)")},
@@ -79,7 +79,11 @@ namespace BYOVDHunter
             {"__writemsr", ("MSR", "Write Model Specific Register")},
             {"HalSetBusDataByOffset", ("MSR", "Write to PCI config space")},
 
+            // Handle closure (remote handle disruption)
+            {"ZwClose", ("HandleClose", "Close object handle")},
+
             // Registry from kernel
+            {"RtlQueryRegistryValues", ("RegQuery", "Query registry values (potential stack buffer overflow)")},
             {"ZwSetValueKey", ("Registry", "Modify registry value")},
             {"ZwDeleteValueKey", ("Registry", "Delete registry value")},
             {"ZwCreateKey", ("Registry", "Create registry key")},
@@ -199,6 +203,31 @@ namespace BYOVDHunter
         {
             return _whitelistEnabled && CoreWhitelist.Contains(fileName);
         }
+
+        #endregion
+
+        #region Behavior Mapping
+
+        private static readonly Dictionary<string, BehaviorTag> CategoryToBehavior =
+            new Dictionary<string, BehaviorTag>(StringComparer.OrdinalIgnoreCase)
+        {
+            {"ProcKill",      BehaviorTag.B1_ProtectedServiceTermination},
+            {"ProcManip",     BehaviorTag.B1_ProtectedServiceTermination},
+            {"HandleLeak",    BehaviorTag.B2_PrivilegedHandleLeak},
+            {"PoolAlloc",     BehaviorTag.B3_UnsafePoolAllocation},
+            {"KernelExec",    BehaviorTag.B4_DynamicKernelCodeExec},
+            {"MemMap",        BehaviorTag.B5_MismatchedMemoryMapping},
+            {"PhysMem",       BehaviorTag.B8_ArbitraryMemoryWrite | BehaviorTag.B11_PhysicalMemoryMapping},
+            {"CITamper",      BehaviorTag.B6_CodeIntegrityTampering},
+            {"HandleClose",   BehaviorTag.B7_RemoteHandleClosure},
+            {"MSR",           BehaviorTag.B9_ArbitraryMsrWrite},
+            {"IoPort",        BehaviorTag.B10_ArbitraryPortIO},
+            {"TaintedArgs",   BehaviorTag.B12_TaintedKernelArgs},
+            {"MemRemap",      BehaviorTag.B13_ExecWritableRemap},
+            {"RegQuery",      BehaviorTag.B14_UnsafeRtlQueryRegistry},
+            {"CallbackUnreg", BehaviorTag.B6_CodeIntegrityTampering},
+            {"TokenManip",    BehaviorTag.B2_PrivilegedHandleLeak},
+        };
 
         #endregion
 
@@ -501,6 +530,61 @@ namespace BYOVDHunter
                     dr.IoctlCodes.Add(IoctlInfo.Decode(code));
 
                 dr.SuspiciousStrings = PeParser.FindSuspiciousStrings(data);
+
+                // Compute behavior tags from reachable dangerous imports
+                BehaviorTag behaviors = BehaviorTag.None;
+                foreach (var imp in dr.DangerousImports)
+                {
+                    if (imp.Reachability == Reachability.Direct || imp.Reachability == Reachability.Indirect)
+                    {
+                        if (CategoryToBehavior.TryGetValue(imp.Category, out var bt))
+                        {
+                            imp.BehaviorTag = bt;
+                            behaviors |= bt;
+                        }
+                        if (imp.Taint == TaintStatus.Tainted || imp.Taint == TaintStatus.LikelyTainted)
+                        {
+                            behaviors |= BehaviorTag.B12_TaintedKernelArgs;
+                        }
+                    }
+                }
+
+                // B6 heuristic: CITamper import reachable OR suspicious strings + PhysMem reachable
+                if (behaviors.HasFlag(BehaviorTag.B6_CodeIntegrityTampering) ||
+                    (dr.SuspiciousStrings.Any(s => s == "g_CiEnabled" || s == "g_CiOptions") &&
+                     dr.DangerousImports.Any(i => i.Category == "PhysMem" &&
+                         (i.Reachability == Reachability.Direct || i.Reachability == Reachability.Indirect))))
+                {
+                    behaviors |= BehaviorTag.B6_CodeIntegrityTampering;
+                }
+
+                // B14 detection: requires IOCTL reachability + stack buffer pattern
+                if (headers != null && dr.DangerousImports.Any(i =>
+                    i.FunctionName == "RtlQueryRegistryValues" &&
+                    (i.Reachability == Reachability.Direct || i.Reachability == Reachability.Indirect)))
+                {
+                    var iatMap2 = PeParser.GetImportAddressTable(data);
+                    if (DetectUnsafeRtlQueryRegistry(data, headers.Value, iatMap2))
+                        behaviors |= BehaviorTag.B14_UnsafeRtlQueryRegistry;
+                }
+
+                // Refine B8 for MmMapLockedPagesSpecifyCache: check AccessMode parameter
+                if (behaviors.HasFlag(BehaviorTag.B8_ArbitraryMemoryWrite) && headers != null)
+                {
+                    var reachablePhysMem = dr.DangerousImports.FindAll(i =>
+                        i.Category == "PhysMem" &&
+                        (i.Reachability == Reachability.Direct || i.Reachability == Reachability.Indirect));
+                    if (reachablePhysMem.Count > 0 &&
+                        reachablePhysMem.TrueForAll(i => i.FunctionName == "MmMapLockedPagesSpecifyCache"))
+                    {
+                        var iatMap3 = PeParser.GetImportAddressTable(data);
+                        uint hRva = dr.Dispatch != null ? dr.Dispatch.DeviceControlHandlerRva : 0;
+                        if (!HasUserModeMapping(data, headers.Value, iatMap3, hRva))
+                            behaviors &= ~BehaviorTag.B8_ArbitraryMemoryWrite;
+                    }
+                }
+
+                dr.Behaviors = behaviors;
             }
             catch { }
         }
@@ -531,6 +615,178 @@ namespace BYOVDHunter
                 }
             }
             return sites;
+        }
+
+        private static bool DetectUnsafeRtlQueryRegistry(byte[] data, PeParser.PeHeaders headers,
+            Dictionary<uint, string> iatMap)
+        {
+            uint targetIatRva = 0;
+            foreach (var kv in iatMap)
+            {
+                if (kv.Value.Equals("RtlQueryRegistryValues", StringComparison.OrdinalIgnoreCase))
+                { targetIatRva = kv.Key; break; }
+            }
+            if (targetIatRva == 0) return false;
+
+            for (int i = 0; i < data.Length - 6; i++)
+            {
+                if (data[i] != 0xFF || data[i + 1] != 0x15) continue;
+                int disp = BitConverter.ToInt32(data, i + 2);
+                uint instrRva = PeParser.OffsetToRva(i, headers.Sections);
+                if (instrRva == 0) continue;
+                if ((uint)(instrRva + 6 + disp) != targetIatRva) continue;
+
+                bool hasStackQueryTable = false;
+                int searchStart = Math.Max(0, i - 64);
+                for (int j = i - 4; j >= searchStart; j--)
+                {
+                    if (j + 5 <= data.Length && data[j] == 0x4C && data[j + 1] == 0x8D && data[j + 2] == 0x44 && data[j + 3] == 0x24)
+                    { hasStackQueryTable = true; break; }
+                    if (j + 8 <= data.Length && data[j] == 0x4C && data[j + 1] == 0x8D && data[j + 2] == 0x84 && data[j + 3] == 0x24)
+                    { hasStackQueryTable = true; break; }
+                    if (j + 4 <= data.Length && data[j] == 0x4C && data[j + 1] == 0x8D && data[j + 2] == 0x45)
+                    { hasStackQueryTable = true; break; }
+                    if (j + 7 <= data.Length && data[j] == 0x4C && data[j + 1] == 0x8D && data[j + 2] == 0x85)
+                    { hasStackQueryTable = true; break; }
+                }
+
+                if (!hasStackQueryTable) continue;
+
+                // Check for DIRECT flag (0x20) and TYPECHECK mitigation (0x100)
+                // Search MOV DWORD patterns that set the Flags field
+                bool hasDirect = false;
+                bool hasTypecheck = false;
+                bool anyFlagStore = false;
+                int flagSearch = Math.Max(0, i - 128);
+                for (int j = flagSearch; j < i; j++)
+                {
+                    if (j + 7 > data.Length) break;
+                    // C7 41 xx imm32 - MOV DWORD [RCX+disp8], imm32
+                    // C7 45 xx imm32 - MOV DWORD [RBP+disp8], imm32
+                    // C7 44 24 xx imm32 - MOV DWORD [RSP+disp8], imm32
+                    // C7 84 24 xx xx xx xx imm32 - MOV DWORD [RSP+disp32], imm32
+                    uint flagVal = 0;
+                    bool found = false;
+                    if (data[j] == 0xC7 && data[j + 1] == 0x41 && j + 7 <= data.Length)
+                    { flagVal = BitConverter.ToUInt32(data, j + 3); found = true; }
+                    else if (data[j] == 0xC7 && data[j + 1] == 0x45 && j + 7 <= data.Length)
+                    { flagVal = BitConverter.ToUInt32(data, j + 3); found = true; }
+                    else if (data[j] == 0xC7 && data[j + 1] == 0x44 && data[j + 2] == 0x24 && j + 8 <= data.Length)
+                    { flagVal = BitConverter.ToUInt32(data, j + 4); found = true; }
+                    else if (data[j] == 0xC7 && data[j + 1] == 0x84 && data[j + 2] == 0x24 && j + 11 <= data.Length)
+                    { flagVal = BitConverter.ToUInt32(data, j + 7); found = true; }
+                    else if (data[j] == 0xC7 && data[j + 1] == 0x85 && j + 10 <= data.Length)
+                    { flagVal = BitConverter.ToUInt32(data, j + 6); found = true; }
+
+                    if (found && flagVal < 0x1000)
+                    {
+                        anyFlagStore = true;
+                        if ((flagVal & 0x20) != 0)
+                        {
+                            hasDirect = true;
+                            if ((flagVal & 0x100) != 0) hasTypecheck = true;
+                        }
+                    }
+                }
+
+                if (hasDirect && !hasTypecheck) return true;
+                if (anyFlagStore && !hasDirect) continue;
+                if (!anyFlagStore && hasStackQueryTable) return true;
+            }
+            return false;
+        }
+
+        private static bool HasUserModeMapping(byte[] data, PeParser.PeHeaders headers,
+            Dictionary<uint, string> iatMap, uint handlerRva)
+        {
+            uint targetIatRva = 0;
+            foreach (var kv in iatMap)
+            {
+                if (kv.Value.Equals("MmMapLockedPagesSpecifyCache", StringComparison.OrdinalIgnoreCase))
+                { targetIatRva = kv.Key; break; }
+            }
+            if (targetIatRva == 0) return false;
+
+            HashSet<uint> reachableFuncs = null;
+            if (handlerRva != 0)
+                reachableFuncs = BuildReachableSet(data, headers, handlerRva);
+
+            for (int i = 0; i < data.Length - 6; i++)
+            {
+                if (data[i] != 0xFF || data[i + 1] != 0x15) continue;
+                int disp = BitConverter.ToInt32(data, i + 2);
+                uint instrRva = PeParser.OffsetToRva(i, headers.Sections);
+                if (instrRva == 0) continue;
+                if ((uint)(instrRva + 6 + disp) != targetIatRva) continue;
+
+                if (reachableFuncs != null)
+                {
+                    uint funcRva = FindFunctionStart(data, headers, i);
+                    if (!reachableFuncs.Contains(funcRva)) continue;
+                }
+
+                int searchStart = Math.Max(0, i - 32);
+                bool kernelMode = false;
+                for (int j = i - 2; j >= searchStart; j--)
+                {
+                    if (j + 2 <= i && (data[j] == 0x31 || data[j] == 0x33) && data[j + 1] == 0xD2)
+                    { kernelMode = true; break; }
+                    if (j + 5 <= i && data[j] == 0xBA &&
+                        data[j + 1] == 0 && data[j + 2] == 0 && data[j + 3] == 0 && data[j + 4] == 0)
+                    { kernelMode = true; break; }
+                }
+                if (!kernelMode) return true;
+            }
+            return false;
+        }
+
+        private static uint FindFunctionStart(byte[] data, PeParser.PeHeaders headers, int offset)
+        {
+            for (int i = offset - 1; i >= Math.Max(0, offset - 4096); i--)
+            {
+                if (data[i] == 0xCC && i > 0 && data[i - 1] == 0xCC)
+                    return PeParser.OffsetToRva(i + 1, headers.Sections);
+            }
+            return PeParser.OffsetToRva(offset, headers.Sections);
+        }
+
+        private static HashSet<uint> BuildReachableSet(byte[] data, PeParser.PeHeaders headers, uint handlerRva)
+        {
+            var reachable = new HashSet<uint>();
+            reachable.Add(handlerRva);
+
+            int hOff = PeParser.RvaToOffset(handlerRva, headers.Sections);
+            if (hOff <= 0) return reachable;
+
+            var depth1 = CollectCallTargets(data, headers, hOff, 0x3000);
+            foreach (uint t in depth1) reachable.Add(t);
+
+            foreach (uint t in depth1)
+            {
+                int tOff = PeParser.RvaToOffset(t, headers.Sections);
+                if (tOff <= 0 || tOff >= data.Length) continue;
+                foreach (uint t2 in CollectCallTargets(data, headers, tOff, 0x2000))
+                    reachable.Add(t2);
+            }
+            return reachable;
+        }
+
+        private static HashSet<uint> CollectCallTargets(byte[] data, PeParser.PeHeaders headers,
+            int startOffset, int maxScan)
+        {
+            var targets = new HashSet<uint>();
+            int end = Math.Min(startOffset + maxScan, data.Length - 5);
+            for (int i = startOffset; i < end; i++)
+            {
+                if (data[i] != 0xE8) continue;
+                int disp = BitConverter.ToInt32(data, i + 1);
+                uint instrRva = PeParser.OffsetToRva(i, headers.Sections);
+                if (instrRva == 0) continue;
+                uint target = (uint)(instrRva + 5 + disp);
+                if (target > 0x1000 && target < 0x200000)
+                    targets.Add(target);
+            }
+            return targets;
         }
 
         #endregion
@@ -569,6 +825,66 @@ namespace BYOVDHunter
             bool isWdm = dr.Framework == DriverFramework.WDM;
             bool isKmdf = dr.Framework == DriverFramework.KMDF;
 
+            // B14: Unsafe RtlQueryRegistryValues - CVE-2025-8412 pattern
+            if (dr.Behaviors.HasFlag(BehaviorTag.B14_UnsafeRtlQueryRegistry) && dr.IsLoaded)
+            {
+                dr.Risk = RiskLevel.Critical;
+                dr.RiskReason = "Unsafe RtlQueryRegistryValues (stack buffer overflow pattern) - LOADED";
+                dr.Impact = "Kernel stack overflow / Code Integrity bypass / arbitrary code execution";
+                dr.ExploitUse = "BYOVD / DSE bypass (CVE-2025-8412 pattern)";
+                dr.Note = "RtlQueryRegistryValues with fixed-size stack buffer and RTL_QUERY_REGISTRY_DIRECT. Attacker controls registry value size.";
+                return;
+            }
+
+            if (dr.Behaviors.HasFlag(BehaviorTag.B14_UnsafeRtlQueryRegistry) && !dr.IsLoaded)
+            {
+                dr.Risk = RiskLevel.High;
+                dr.RiskReason = "Unsafe RtlQueryRegistryValues (stack buffer overflow pattern) - on disk";
+                dr.Impact = "Kernel stack overflow / Code Integrity bypass (requires load)";
+                dr.ExploitUse = "BYOVD / DSE bypass (CVE-2025-8412 pattern)";
+                return;
+            }
+
+            // B6: Code Integrity Tampering confirmed
+            if (dr.Behaviors.HasFlag(BehaviorTag.B6_CodeIntegrityTampering) && hasReachable && dr.IsLoaded)
+            {
+                dr.Risk = RiskLevel.Critical;
+                dr.RiskReason = "Code Integrity tampering path confirmed (g_CiEnabled/g_CiOptions) - LOADED";
+                dr.Impact = "DSE bypass / unsigned driver loading / rootkit installation";
+                dr.ExploitUse = "BYOVD / DSE bypass";
+                return;
+            }
+
+            // B4: Dynamic kernel code execution
+            if (dr.Behaviors.HasFlag(BehaviorTag.B4_DynamicKernelCodeExec) && hasTainted && dr.IsLoaded)
+            {
+                dr.Risk = RiskLevel.Critical;
+                dr.RiskReason = "Dynamic kernel code execution with tainted input - LOADED";
+                dr.Impact = "Arbitrary kernel code execution";
+                dr.ExploitUse = "BYOVD / kernel shellcode injection";
+                return;
+            }
+
+            // B7: Remote handle closure
+            if (dr.Behaviors.HasFlag(BehaviorTag.B7_RemoteHandleClosure) && hasTainted && dr.IsLoaded)
+            {
+                dr.Risk = RiskLevel.High;
+                dr.RiskReason = "Remote handle closure with tainted input - LOADED";
+                dr.Impact = "EDR handle disruption / file lock bypass";
+                dr.ExploitUse = "BYOVD / EDR evasion";
+                return;
+            }
+
+            // B3: Unsafe pool allocation with no validation
+            if (dr.Behaviors.HasFlag(BehaviorTag.B3_UnsafePoolAllocation) && noValidation && dr.IsLoaded)
+            {
+                dr.Risk = RiskLevel.High;
+                dr.RiskReason = "Unsafe pool allocation with no buffer validation - LOADED";
+                dr.Impact = "Kernel pool overflow / privilege escalation";
+                dr.ExploitUse = "BYOVD / LPE";
+                return;
+            }
+
             // CRITICAL
             if (hasLolOrBlocklist && dr.IsLoaded)
             {
@@ -603,10 +919,13 @@ namespace BYOVDHunter
             }
 
             var criticalCategories = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "PhysMem", "ProcKill", "ProcManip", "IoPort", "MSR", "CallbackManip" };
+                { "PhysMem", "ProcKill", "ProcManip", "IoPort", "MSR", "CallbackUnreg" };
+            bool physMemDowngraded = dr.Behaviors.HasFlag(BehaviorTag.B11_PhysicalMemoryMapping) &&
+                !dr.Behaviors.HasFlag(BehaviorTag.B8_ArbitraryMemoryWrite);
             bool hasReachableCriticalCategory = dr.DangerousImports.Any(i =>
                 (i.Reachability == Reachability.Direct || i.Reachability == Reachability.Indirect) &&
-                criticalCategories.Contains(i.Category ?? ""));
+                criticalCategories.Contains(i.Category ?? "") &&
+                !(physMemDowngraded && i.Category == "PhysMem"));
 
             if (hasReachableCriticalCategory && hasDeviceExposure && dr.IsLoaded && !dr.IsWhitelisted)
             {
@@ -787,12 +1106,12 @@ namespace BYOVDHunter
             var impacts = new List<string>();
             bool hasMem = dr.DangerousImports.Any(i => i.Category == "PhysMem");
             bool hasProc = dr.DangerousImports.Any(i => i.Category == "ProcKill" || i.Category == "ProcManip");
-            bool hasCallback = dr.DangerousImports.Any(i => i.Category == "CallbackManip");
+            bool hasCallbackUnreg = dr.DangerousImports.Any(i => i.Category == "CallbackUnreg");
             bool hasIoPort = dr.DangerousImports.Any(i => i.Category == "IoPort");
             bool hasMsr = dr.DangerousImports.Any(i => i.Category == "MSR");
 
             if (hasMem) impacts.Add("LPE");
-            if (hasMem || hasCallback) impacts.Add("EDR bypass");
+            if (hasMem || hasCallbackUnreg) impacts.Add("EDR bypass");
             if (hasProc) impacts.Add("EDR kill");
             if (hasMem) impacts.Add("credential theft");
             if (hasIoPort || hasMsr) impacts.Add("firmware persistence");
@@ -805,10 +1124,10 @@ namespace BYOVDHunter
             var uses = new List<string> { "BYOVD" };
             bool hasMem = dr.DangerousImports.Any(i => i.Category == "PhysMem");
             bool hasProc = dr.DangerousImports.Any(i => i.Category == "ProcKill" || i.Category == "ProcManip");
-            bool hasCallback = dr.DangerousImports.Any(i => i.Category == "CallbackManip");
+            bool hasCallbackUnreg = dr.DangerousImports.Any(i => i.Category == "CallbackUnreg");
 
             if (hasProc) uses.Add("EDR killer");
-            if (hasCallback) uses.Add("EDR blinding");
+            if (hasCallbackUnreg) uses.Add("EDR blinding");
             if (hasMem) { uses.Add("PPL bypass"); uses.Add("DSE bypass"); }
             uses.Add("persistence");
             return string.Join(" / ", uses);

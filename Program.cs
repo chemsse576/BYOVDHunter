@@ -332,9 +332,36 @@ namespace BYOVDHunter
                 RwxSections = results.Sum(r => r.Sections.Count(s => s.IsRWX)),
                 HighEntropySections = results.Sum(r => r.Sections.Count(s => s.IsHighEntropy)),
                 Unsigned = results.Count(r => !r.IsSigned && string.IsNullOrEmpty(r.Error) && !r.IsWhitelisted),
+                BehaviorB14Count = results.Count(r => r.Behaviors.HasFlag(BehaviorTag.B14_UnsafeRtlQueryRegistry)),
                 SystemStatus = sysStatus,
                 ScanPaths = scanPaths,
             };
+
+            // Compute behavior counts
+            var behaviorDefs = new[]
+            {
+                new { Tag = BehaviorTag.B1_ProtectedServiceTermination, Name = "B1:SvcTermination" },
+                new { Tag = BehaviorTag.B2_PrivilegedHandleLeak,       Name = "B2:HandleLeak" },
+                new { Tag = BehaviorTag.B3_UnsafePoolAllocation,       Name = "B3:PoolAlloc" },
+                new { Tag = BehaviorTag.B4_DynamicKernelCodeExec,      Name = "B4:KernelExec" },
+                new { Tag = BehaviorTag.B5_MismatchedMemoryMapping,    Name = "B5:MemMap" },
+                new { Tag = BehaviorTag.B6_CodeIntegrityTampering,     Name = "B6:CITamper" },
+                new { Tag = BehaviorTag.B7_RemoteHandleClosure,        Name = "B7:HandleClose" },
+                new { Tag = BehaviorTag.B8_ArbitraryMemoryWrite,       Name = "B8:MemWrite" },
+                new { Tag = BehaviorTag.B9_ArbitraryMsrWrite,          Name = "B9:MsrWrite" },
+                new { Tag = BehaviorTag.B10_ArbitraryPortIO,           Name = "B10:PortIO" },
+                new { Tag = BehaviorTag.B11_PhysicalMemoryMapping,     Name = "B11:PhysMemMap" },
+                new { Tag = BehaviorTag.B12_TaintedKernelArgs,         Name = "B12:TaintedArgs" },
+                new { Tag = BehaviorTag.B13_ExecWritableRemap,         Name = "B13:ExecRemap" },
+                new { Tag = BehaviorTag.B14_UnsafeRtlQueryRegistry,    Name = "B14:UnsafeRegQuery" },
+                new { Tag = BehaviorTag.B15_RtlQueryRegistryTampering, Name = "B15:RegTamper" },
+            };
+            foreach (var bd in behaviorDefs)
+            {
+                int count = results.Count(r => r.Behaviors.HasFlag(bd.Tag));
+                if (count > 0)
+                    summary.BehaviorCounts[bd.Name] = count;
+            }
 
             Output.PrintSummary(summary);
 

@@ -9,6 +9,27 @@ namespace BYOVDHunter
     public enum BufferValidation { NoValidation, BasicValidation, ProperValidation, Unknown }
     public enum DriverFramework { Unknown, WDM, KMDF }
 
+    [System.Flags]
+    public enum BehaviorTag : int
+    {
+        None                          = 0,
+        B1_ProtectedServiceTermination = 1 << 0,
+        B2_PrivilegedHandleLeak       = 1 << 1,
+        B3_UnsafePoolAllocation       = 1 << 2,
+        B4_DynamicKernelCodeExec      = 1 << 3,
+        B5_MismatchedMemoryMapping    = 1 << 4,
+        B6_CodeIntegrityTampering     = 1 << 5,
+        B7_RemoteHandleClosure        = 1 << 6,
+        B8_ArbitraryMemoryWrite       = 1 << 7,
+        B9_ArbitraryMsrWrite          = 1 << 8,
+        B10_ArbitraryPortIO           = 1 << 9,
+        B11_PhysicalMemoryMapping     = 1 << 10,
+        B12_TaintedKernelArgs         = 1 << 11,
+        B13_ExecWritableRemap         = 1 << 12,
+        B14_UnsafeRtlQueryRegistry    = 1 << 13,
+        B15_RtlQueryRegistryTampering = 1 << 14,
+    }
+
     public class DriverResult
     {
         public string Path { get; set; }
@@ -40,6 +61,7 @@ namespace BYOVDHunter
 
         public DriverFramework Framework { get; set; }
         public DispatchAnalysisResult Dispatch { get; set; }
+        public BehaviorTag Behaviors { get; set; }
 
         public RiskLevel Risk { get; set; }
         public string RiskReason { get; set; }
@@ -73,6 +95,7 @@ namespace BYOVDHunter
         public string Description { get; set; }
         public Reachability Reachability { get; set; }
         public TaintStatus Taint { get; set; }
+        public BehaviorTag BehaviorTag { get; set; }
 
         public DangerousImport()
         {
@@ -303,6 +326,8 @@ namespace BYOVDHunter
         public int RwxSections { get; set; }
         public int HighEntropySections { get; set; }
         public int Unsigned { get; set; }
+        public int BehaviorB14Count { get; set; }
+        public Dictionary<string, int> BehaviorCounts { get; set; }
         public SystemProtection SystemStatus { get; set; }
         public List<string> ScanPaths { get; set; }
 
@@ -310,6 +335,7 @@ namespace BYOVDHunter
         {
             ScanPaths = new List<string>();
             SystemStatus = new SystemProtection();
+            BehaviorCounts = new Dictionary<string, int>();
         }
     }
 }

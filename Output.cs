@@ -274,6 +274,27 @@ namespace BYOVDHunter
                 PrintBoxLine($"High entropy    : {string.Join(", ", he)} (possibly packed)", ConsoleColor.Yellow);
             }
 
+            if (dr.Behaviors != BehaviorTag.None)
+            {
+                var behaviorNames = new List<string>();
+                if (dr.Behaviors.HasFlag(BehaviorTag.B1_ProtectedServiceTermination)) behaviorNames.Add("B1:SvcTermination");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B2_PrivilegedHandleLeak))       behaviorNames.Add("B2:HandleLeak");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B3_UnsafePoolAllocation))       behaviorNames.Add("B3:PoolAlloc");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B4_DynamicKernelCodeExec))      behaviorNames.Add("B4:KernelExec");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B5_MismatchedMemoryMapping))    behaviorNames.Add("B5:MemMap");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B6_CodeIntegrityTampering))     behaviorNames.Add("B6:CITamper");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B7_RemoteHandleClosure))        behaviorNames.Add("B7:HandleClose");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B8_ArbitraryMemoryWrite))       behaviorNames.Add("B8:MemWrite");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B9_ArbitraryMsrWrite))          behaviorNames.Add("B9:MsrWrite");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B10_ArbitraryPortIO))           behaviorNames.Add("B10:PortIO");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B11_PhysicalMemoryMapping))     behaviorNames.Add("B11:PhysMemMap");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B12_TaintedKernelArgs))         behaviorNames.Add("B12:TaintedArgs");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B13_ExecWritableRemap))         behaviorNames.Add("B13:ExecRemap");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B14_UnsafeRtlQueryRegistry))    behaviorNames.Add("B14:UnsafeRegQuery");
+                if (dr.Behaviors.HasFlag(BehaviorTag.B15_RtlQueryRegistryTampering)) behaviorNames.Add("B15:RegTamper");
+                PrintBoxLine($"Behaviors       : {string.Join(", ", behaviorNames)}", ConsoleColor.Magenta);
+            }
+
             if (!string.IsNullOrEmpty(dr.RiskReason))
                 PrintBoxLine($"Risk            : {dr.RiskReason}", accent);
             if (!string.IsNullOrEmpty(dr.Impact))
@@ -324,12 +345,40 @@ namespace BYOVDHunter
                 PrintBoxLineThin("Imports: " + string.Join(", ", impNames), ConsoleColor.DarkYellow);
             }
 
+            if (dr.Behaviors != BehaviorTag.None)
+            {
+                var bNames = FormatBehaviorTags(dr.Behaviors);
+                if (bNames.Length > 0)
+                    PrintBoxLineThin("Behaviors: " + bNames, ConsoleColor.Magenta);
+            }
+
             if (!string.IsNullOrEmpty(dr.Note))
                 PrintBoxLineThin(dr.Note, ConsoleColor.DarkGray);
 
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine(bot);
             Console.ForegroundColor = prev;
+        }
+
+        private static string FormatBehaviorTags(BehaviorTag b)
+        {
+            var names = new List<string>();
+            if (b.HasFlag(BehaviorTag.B1_ProtectedServiceTermination)) names.Add("B1:SvcTermination");
+            if (b.HasFlag(BehaviorTag.B2_PrivilegedHandleLeak))       names.Add("B2:HandleLeak");
+            if (b.HasFlag(BehaviorTag.B3_UnsafePoolAllocation))       names.Add("B3:PoolAlloc");
+            if (b.HasFlag(BehaviorTag.B4_DynamicKernelCodeExec))      names.Add("B4:KernelExec");
+            if (b.HasFlag(BehaviorTag.B5_MismatchedMemoryMapping))    names.Add("B5:MemMap");
+            if (b.HasFlag(BehaviorTag.B6_CodeIntegrityTampering))     names.Add("B6:CITamper");
+            if (b.HasFlag(BehaviorTag.B7_RemoteHandleClosure))        names.Add("B7:HandleClose");
+            if (b.HasFlag(BehaviorTag.B8_ArbitraryMemoryWrite))       names.Add("B8:MemWrite");
+            if (b.HasFlag(BehaviorTag.B9_ArbitraryMsrWrite))          names.Add("B9:MsrWrite");
+            if (b.HasFlag(BehaviorTag.B10_ArbitraryPortIO))           names.Add("B10:PortIO");
+            if (b.HasFlag(BehaviorTag.B11_PhysicalMemoryMapping))     names.Add("B11:PhysMemMap");
+            if (b.HasFlag(BehaviorTag.B12_TaintedKernelArgs))         names.Add("B12:TaintedArgs");
+            if (b.HasFlag(BehaviorTag.B13_ExecWritableRemap))         names.Add("B13:ExecRemap");
+            if (b.HasFlag(BehaviorTag.B14_UnsafeRtlQueryRegistry))    names.Add("B14:UnsafeRegQuery");
+            if (b.HasFlag(BehaviorTag.B15_RtlQueryRegistryTampering)) names.Add("B15:RegTamper");
+            return string.Join(", ", names);
         }
 
         private static void PrintLowLine(DriverResult dr)
@@ -418,7 +467,7 @@ namespace BYOVDHunter
                 var caps = new List<string>();
                 bool hasMem = dr.DangerousImports.Any(i => i.Category == "PhysMem");
                 bool hasProc = dr.DangerousImports.Any(i => i.Category == "ProcKill" || i.Category == "ProcManip");
-                bool hasCb = dr.DangerousImports.Any(i => i.Category == "CallbackManip");
+                bool hasCb = dr.DangerousImports.Any(i => i.Category == "CallbackUnreg" || i.Category == "CallbackReg");
                 if (hasMem) caps.Add("Kernel R/W");
                 if (hasProc) caps.Add("Process kill");
                 if (hasCb) caps.Add("Callback removal");
@@ -484,6 +533,24 @@ namespace BYOVDHunter
             PrintSumLine("  MEDIUM                   ", s.MediumCount.ToString(), s.MediumCount > 0 ? ConsoleColor.Yellow : ConsoleColor.Green);
             PrintSumLine("  LOW                      ", s.LowCount.ToString(), ConsoleColor.DarkGray);
 
+            if (s.BehaviorCounts != null && s.BehaviorCounts.Count > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.White;
+                Console.WriteLine("  Behavior analysis:");
+                foreach (var kv in s.BehaviorCounts)
+                {
+                    if (kv.Value > 0)
+                    {
+                        var color = kv.Key.StartsWith("B14") || kv.Key.StartsWith("B6") || kv.Key.StartsWith("B4")
+                            ? ConsoleColor.Red
+                            : kv.Key.StartsWith("B1") || kv.Key.StartsWith("B8") || kv.Key.StartsWith("B7")
+                                ? ConsoleColor.DarkRed
+                                : ConsoleColor.Yellow;
+                        PrintSumLine($"  {kv.Key,-25}", kv.Value.ToString(), color);
+                    }
+                }
+            }
+
             Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("  PE security:");
             PrintSumLine("  Missing ASLR             ", s.MissingAslr.ToString(), ConsoleColor.DarkGray);
@@ -530,7 +597,7 @@ namespace BYOVDHunter
             sb.AppendLine("FileName,Path,SHA256,Signed,SignerName,Loaded,Whitelisted,Framework," +
                 "LOLDrivers,MsBlocklist,IoctlFamily,VulnVendor,DeviceNames,IoctlCodes," +
                 "RiskLevel,RiskReason,Impact,ExploitUse,DangerousImports,Reachability,SuspiciousStrings," +
-                "CompileDate,MissingMitigations,Note");
+                "CompileDate,MissingMitigations,Behaviors,Note");
 
             foreach (var r in results.Where(r => r.Risk >= RiskLevel.Low || r.LolMatch != null))
             {
@@ -553,6 +620,7 @@ namespace BYOVDHunter
                     Esc(r.Mitigations != null ? string.Join("; ",
                         new[] { !r.Mitigations.HasASLR ? "NoASLR" : null, !r.Mitigations.HasCFG ? "NoCFG" : null }
                             .Where(s => s != null)) : ""),
+                    Esc(r.Behaviors != BehaviorTag.None ? FormatBehaviorTags(r.Behaviors).Replace(", ", "|") : ""),
                     Esc(r.Note)
                 ));
             }
@@ -637,6 +705,8 @@ namespace BYOVDHunter
                 {"fpReduced", s.UnreachableFpReduced},
                 {"critical", s.CriticalCount}, {"high", s.HighCount},
                 {"medium", s.MediumCount}, {"low", s.LowCount},
+                {"behaviorB14", s.BehaviorB14Count},
+                {"behaviorCounts", s.BehaviorCounts},
             };
         }
 
@@ -656,6 +726,7 @@ namespace BYOVDHunter
                 {"ioctlCodes", r.IoctlCodes.Select(c => new Dictionary<string, object>
                     { {"code", c.CodeHex}, {"method", c.MethodName}, {"access", c.AccessName} }).ToList()},
                 {"suspiciousStrings", r.SuspiciousStrings},
+                {"behaviors", r.Behaviors != BehaviorTag.None ? FormatBehaviorTags(r.Behaviors) : ""},
                 {"lolDrivers", r.LolMatch != null},
                 {"msBlocklist", r.BlocklistMatch != null},
             };
