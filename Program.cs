@@ -256,17 +256,13 @@ namespace BYOVDHunter
                         dr.SignerName, dr.VersionInfo?.CompanyName ?? "");
 
                     // Deep analysis (device names, IOCTL, dispatch, reachability, taint)
-                    if (dr.DangerousImports.Count > 0 || dr.LolMatch != null || dr.BlocklistMatch != null)
-                    {
-                        deepAnalyzed++;
-                        Scanner.DeepAnalysis(dr, fileData, noTaint);
+                    deepAnalyzed++;
+                    Scanner.DeepAnalysis(dr, fileData, noTaint);
 
-                        // IOCTL family match
-                        if (dr.IoctlCodes.Count > 0)
-                        {
-                            dr.FamilyMatch = VulnDatabase.MatchIoctlFamily(
-                                dr.IoctlCodes.Select(c => c.Code));
-                        }
+                    if (dr.IoctlCodes.Count > 0)
+                    {
+                        dr.FamilyMatch = VulnDatabase.MatchIoctlFamily(
+                            dr.IoctlCodes.Select(c => c.Code));
                     }
                 }
 
