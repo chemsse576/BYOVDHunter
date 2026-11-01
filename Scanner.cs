@@ -874,6 +874,11 @@ namespace BYOVDHunter
             bool allNotReachable = hasDangerousImports && dr.DangerousImports.All(i =>
                 i.Reachability == Reachability.NotReachable);
 
+            bool onlyGenericImports = hasDangerousImports &&
+                dr.DangerousImports.All(i =>
+                    i.FunctionName.Equals("ZwClose", StringComparison.OrdinalIgnoreCase) ||
+                    i.FunctionName.Equals("IoCreateDevice", StringComparison.OrdinalIgnoreCase));
+
             bool hasMethodNeither = dr.IoctlCodes.Any(c => c.Method == 3);
             bool hasAnyAccess = dr.IoctlCodes.Any(c => c.Access == 0);
             bool noChecksOnCreate = dr.Dispatch != null &&
@@ -1059,7 +1064,7 @@ namespace BYOVDHunter
             }
 
             // MEDIUM
-            if (allNotReachable && hasDangerousImports)
+            if (allNotReachable && hasDangerousImports && !onlyGenericImports)
             {
                 dr.Risk = RiskLevel.Medium;
                 dr.RiskReason = "Imports NOT_REACHABLE from IOCTL handler (FP reduced)";
@@ -1067,21 +1072,21 @@ namespace BYOVDHunter
                 return;
             }
 
-            if (hasDangerousImports && !hasDeviceExposure)
+            if (hasDangerousImports && !onlyGenericImports && !hasDeviceExposure)
             {
                 dr.Risk = RiskLevel.Medium;
                 dr.RiskReason = "Dangerous imports but no device exposure found";
                 return;
             }
 
-            if (isKmdf && hasDangerousImports)
+            if (isKmdf && hasDangerousImports && !onlyGenericImports)
             {
                 dr.Risk = RiskLevel.Medium;
                 dr.RiskReason = "KMDF driver with dangerous imports (framework protection)";
                 return;
             }
 
-            if (hasDangerousImports && hasDeviceExposure && !dr.IsLoaded)
+            if (hasDangerousImports && !onlyGenericImports && hasDeviceExposure && !dr.IsLoaded)
             {
                 dr.Risk = RiskLevel.Medium;
                 dr.RiskReason = "Dangerous imports + device exposure (not loaded)";
@@ -1103,7 +1108,7 @@ namespace BYOVDHunter
                 return;
             }
 
-            if (hasVendorMatch && hasDangerousImports && !dr.IsLoaded)
+            if (hasVendorMatch && hasDangerousImports && !onlyGenericImports && !dr.IsLoaded)
             {
                 dr.Risk = RiskLevel.Medium;
                 dr.RiskReason = $"Known vuln vendor ({dr.VendorMatch.VendorName}) - not loaded";
