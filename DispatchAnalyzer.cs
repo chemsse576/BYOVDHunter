@@ -6,7 +6,7 @@ namespace BYOVDHunter
 {
     public static class DispatchAnalyzer
     {
-        private static readonly int[] MajorFunctionOffsets =
+        private static readonly int[] MajorFunctionOffsets64 =
         {
             0x70,  // IRP_MJ_CREATE (0)
             0x78,  // IRP_MJ_CREATE_NAMED_PIPE (1)
@@ -17,6 +17,17 @@ namespace BYOVDHunter
             0xE8,  // IRP_MJ_INTERNAL_DEVICE_CONTROL (15)
         };
 
+        private static readonly int[] MajorFunctionOffsets32 =
+        {
+            0x38,  // IRP_MJ_CREATE (0)
+            0x3C,  // IRP_MJ_CREATE_NAMED_PIPE (1)
+            0x40,  // IRP_MJ_CLOSE (2)
+            0x44,  // IRP_MJ_READ (3)
+            0x48,  // IRP_MJ_WRITE (4)
+            0x70,  // IRP_MJ_DEVICE_CONTROL (14)
+            0x74,  // IRP_MJ_INTERNAL_DEVICE_CONTROL (15)
+        };
+
         private static readonly int[] MajorFunctionIndices = { 0, 1, 2, 3, 4, 14, 15 };
 
         public static DispatchAnalysisResult Analyze(byte[] data, PeParser.PeHeaders headers,
@@ -25,12 +36,13 @@ namespace BYOVDHunter
             var result = new DispatchAnalysisResult();
             try
             {
-                if (!headers.IsPe32Plus) return result;
-
                 int entryOffset = PeParser.RvaToOffset(headers.EntryPointRva, headers.Sections);
                 if (entryOffset < 0 || entryOffset >= data.Length) return result;
 
-                ExtractDispatchTable(data, entryOffset, headers, result);
+                if (headers.IsPe32Plus)
+                    ExtractDispatchTable64(data, entryOffset, headers, result);
+                else
+                    ExtractDispatchTable32(data, entryOffset, headers, result);
 
                 if (result.DeviceControlHandlerRva != 0)
                 {
@@ -187,15 +199,50 @@ namespace BYOVDHunter
 
         #region Private helpers
 
-        private static void ExtractDispatchTable(byte[] data, int entryOffset,
+        private static void ExtractDispatchTable64(byte[] data, int entryOffset,
+            PeParser.PeHeaders headers, DispatchAnalysisResult result)
+        {
+            ScanDispatchPatterns64(data, entryOffset, headers, result);
+
+            if (result.HandlerRvas.Count == 0)
+            {
+                var callTargets = new List<int>();
+                int callScanEnd = Math.Min(entryOffset + 8192, data.Length - 5);
+                for (int i = entryOffset; i < callScanEnd && callTargets.Count < 4; i++)
+                {
+                    if (data[i] == 0xE8 && i + 5 <= data.Length)
+                    {
+                        int disp = BitConverter.ToInt32(data, i + 1);
+                        uint instrRva = PeParser.OffsetToRva(i, headers.Sections);
+                        if (instrRva > 0)
+                        {
+                            uint targetRva = (uint)(instrRva + 5 + disp);
+                            int targetOff = PeParser.RvaToOffset(targetRva, headers.Sections);
+                            if (targetOff > 0 && targetOff < data.Length)
+                                callTargets.Add(targetOff);
+                        }
+                        i += 4;
+                        continue;
+                    }
+                    if (data[i] == 0xC3) break;
+                }
+
+                foreach (int targetOff in callTargets)
+                {
+                    ScanDispatchPatterns64(data, targetOff, headers, result);
+                    if (result.HandlerRvas.Count > 0) break;
+                }
+            }
+        }
+
+        private static void ScanDispatchPatterns64(byte[] data, int startOffset,
             PeParser.PeHeaders headers, DispatchAnalysisResult result)
         {
             var regLeaTarget = new Dictionary<int, uint>();
-            int scanEnd = Math.Min(entryOffset + 2048, data.Length - 7);
+            int scanEnd = Math.Min(startOffset + 8192, data.Length - 7);
 
-            for (int i = entryOffset; i < scanEnd; i++)
+            for (int i = startOffset; i < scanEnd; i++)
             {
-                // LEA reg, [RIP+disp32]: (48|4C) 8D ModRM disp32
                 if (i + 7 <= data.Length && (data[i] == 0x48 || data[i] == 0x4C) && data[i + 1] == 0x8D)
                 {
                     byte modrm = data[i + 2];
@@ -203,7 +250,7 @@ namespace BYOVDHunter
                     int rm = modrm & 7;
                     int regField = (modrm >> 3) & 7;
 
-                    if (mod == 0 && rm == 5) // RIP-relative
+                    if (mod == 0 && rm == 5)
                     {
                         int disp = BitConverter.ToInt32(data, i + 3);
                         uint instrRva = PeParser.OffsetToRva(i, headers.Sections);
@@ -218,7 +265,6 @@ namespace BYOVDHunter
                     }
                 }
 
-                // MOV [base+disp32], src: (48|49|4C) 89 ModRM disp32
                 if (i + 7 <= data.Length &&
                     (data[i] == 0x48 || data[i] == 0x49 || data[i] == 0x4C) &&
                     data[i + 1] == 0x89)
@@ -228,13 +274,13 @@ namespace BYOVDHunter
                     int rm = modrm & 7;
                     int regField = (modrm >> 3) & 7;
 
-                    if (mod == 2 && rm != 4) // disp32 addressing, no SIB
+                    if (mod == 2 && rm != 4)
                     {
                         int disp32 = BitConverter.ToInt32(data, i + 3);
 
-                        for (int j = 0; j < MajorFunctionOffsets.Length; j++)
+                        for (int j = 0; j < MajorFunctionOffsets64.Length; j++)
                         {
-                            if (disp32 == MajorFunctionOffsets[j])
+                            if (disp32 == MajorFunctionOffsets64[j])
                             {
                                 int srcReg = regField + (data[i] == 0x4C ? 8 : 0);
                                 if (regLeaTarget.ContainsKey(srcReg))
@@ -255,7 +301,187 @@ namespace BYOVDHunter
                     }
                 }
 
-                // Stop at RET if we've found at least some entries
+                if (data[i] == 0xC3 && result.HandlerRvas.Count > 0)
+                    break;
+            }
+        }
+
+        private static void ExtractDispatchTable32(byte[] data, int entryOffset,
+            PeParser.PeHeaders headers, DispatchAnalysisResult result)
+        {
+            ScanDispatchPatterns32(data, entryOffset, headers, result);
+
+            if (result.HandlerRvas.Count == 0)
+            {
+                var callTargets = new List<int>();
+                int callScanEnd = Math.Min(entryOffset + 8192, data.Length - 5);
+                for (int i = entryOffset; i < callScanEnd && callTargets.Count < 4; i++)
+                {
+                    if (data[i] == 0xE8 && i + 5 <= data.Length)
+                    {
+                        int disp = BitConverter.ToInt32(data, i + 1);
+                        uint instrRva = PeParser.OffsetToRva(i, headers.Sections);
+                        if (instrRva > 0)
+                        {
+                            uint targetRva = (uint)(instrRva + 5 + disp);
+                            int targetOff = PeParser.RvaToOffset(targetRva, headers.Sections);
+                            if (targetOff > 0 && targetOff < data.Length)
+                                callTargets.Add(targetOff);
+                        }
+                        i += 4;
+                        continue;
+                    }
+                    if (data[i] == 0xC3) break;
+                }
+
+                foreach (int targetOff in callTargets)
+                {
+                    ScanDispatchPatterns32(data, targetOff, headers, result);
+                    if (result.HandlerRvas.Count > 0) break;
+                }
+            }
+        }
+
+        private static void ScanDispatchPatterns32(byte[] data, int startOffset,
+            PeParser.PeHeaders headers, DispatchAnalysisResult result)
+        {
+            var regValues = new Dictionary<int, uint>();
+            ulong imageBase = headers.ImageBase;
+            int scanEnd = Math.Min(startOffset + 8192, data.Length - 6);
+
+            for (int i = startOffset; i < scanEnd; i++)
+            {
+                // MOV reg, imm32: B8+rd imm32
+                if (data[i] >= 0xB8 && data[i] <= 0xBF && i + 5 <= data.Length)
+                {
+                    int reg = data[i] - 0xB8;
+                    uint imm = BitConverter.ToUInt32(data, i + 1);
+                    if (imm > imageBase && imm < imageBase + 0x10000000)
+                        regValues[reg] = imm;
+                    i += 4;
+                    continue;
+                }
+
+                // LEA reg, [disp32]: 8D ModRM disp32 (mod=0, rm=5)
+                if (data[i] == 0x8D && i + 6 <= data.Length)
+                {
+                    byte modrm = data[i + 1];
+                    int mod = (modrm >> 6) & 3;
+                    int rm = modrm & 7;
+                    int reg = (modrm >> 3) & 7;
+                    if (mod == 0 && rm == 5)
+                    {
+                        uint addr = BitConverter.ToUInt32(data, i + 2);
+                        if (addr > imageBase && addr < imageBase + 0x10000000)
+                            regValues[reg] = addr;
+                        i += 5;
+                        continue;
+                    }
+                }
+
+                // MOV [reg+disp8], imm32: C7 ModRM disp8 imm32
+                // MOV [reg+disp32], imm32: C7 ModRM disp32 imm32
+                if (data[i] == 0xC7)
+                {
+                    byte modrm = data[i + 1];
+                    int mod = (modrm >> 6) & 3;
+                    int rm = modrm & 7;
+                    int regOp = (modrm >> 3) & 7;
+
+                    if (regOp == 0 && mod == 1 && rm != 4 && i + 7 <= data.Length)
+                    {
+                        int disp = (sbyte)data[i + 2];
+                        uint imm = BitConverter.ToUInt32(data, i + 3);
+
+                        for (int j = 0; j < MajorFunctionOffsets32.Length; j++)
+                        {
+                            if (disp == MajorFunctionOffsets32[j] && imm > imageBase)
+                            {
+                                uint handlerRva = (uint)(imm - imageBase);
+                                if (handlerRva < 0x10000000)
+                                {
+                                    int mjIndex = MajorFunctionIndices[j];
+                                    result.HandlerRvas[mjIndex] = handlerRva;
+                                    if (mjIndex == 14) result.DeviceControlHandlerRva = handlerRva;
+                                    else if (mjIndex == 0) result.CreateHandlerRva = handlerRva;
+                                }
+                                break;
+                            }
+                        }
+                        i += 6;
+                        continue;
+                    }
+
+                    if (regOp == 0 && mod == 2 && rm != 4 && i + 10 <= data.Length)
+                    {
+                        int disp = BitConverter.ToInt32(data, i + 2);
+                        uint imm = BitConverter.ToUInt32(data, i + 6);
+
+                        for (int j = 0; j < MajorFunctionOffsets32.Length; j++)
+                        {
+                            if (disp == MajorFunctionOffsets32[j] && imm > imageBase)
+                            {
+                                uint handlerRva = (uint)(imm - imageBase);
+                                if (handlerRva < 0x10000000)
+                                {
+                                    int mjIndex = MajorFunctionIndices[j];
+                                    result.HandlerRvas[mjIndex] = handlerRva;
+                                    if (mjIndex == 14) result.DeviceControlHandlerRva = handlerRva;
+                                    else if (mjIndex == 0) result.CreateHandlerRva = handlerRva;
+                                }
+                                break;
+                            }
+                        }
+                        i += 9;
+                        continue;
+                    }
+                }
+
+                // MOV [reg+disp], src_reg: 89 ModRM disp8/disp32
+                if (data[i] == 0x89 && i + 3 <= data.Length)
+                {
+                    byte modrm = data[i + 1];
+                    int mod = (modrm >> 6) & 3;
+                    int rm = modrm & 7;
+                    int srcReg = (modrm >> 3) & 7;
+
+                    int disp = 0;
+                    int instrLen = 0;
+
+                    if (mod == 1 && rm != 4)
+                    {
+                        disp = (sbyte)data[i + 2];
+                        instrLen = 3;
+                    }
+                    else if (mod == 2 && rm != 4 && i + 6 <= data.Length)
+                    {
+                        disp = BitConverter.ToInt32(data, i + 2);
+                        instrLen = 6;
+                    }
+
+                    if (instrLen > 0 && regValues.ContainsKey(srcReg))
+                    {
+                        for (int j = 0; j < MajorFunctionOffsets32.Length; j++)
+                        {
+                            if (disp == MajorFunctionOffsets32[j])
+                            {
+                                uint va = regValues[srcReg];
+                                uint handlerRva = (uint)(va - imageBase);
+                                if (handlerRva > 0 && handlerRva < 0x10000000)
+                                {
+                                    int mjIndex = MajorFunctionIndices[j];
+                                    result.HandlerRvas[mjIndex] = handlerRva;
+                                    if (mjIndex == 14) result.DeviceControlHandlerRva = handlerRva;
+                                    else if (mjIndex == 0) result.CreateHandlerRva = handlerRva;
+                                }
+                                break;
+                            }
+                        }
+                        i += instrLen - 1;
+                        continue;
+                    }
+                }
+
                 if (data[i] == 0xC3 && result.HandlerRvas.Count > 0)
                     break;
             }

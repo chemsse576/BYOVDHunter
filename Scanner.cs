@@ -557,10 +557,21 @@ namespace BYOVDHunter
                         foreach (uint c in dispResult.ExtractedIoctlCodes)
                             if (!rawIoctlCodes.Contains(c)) rawIoctlCodes.Add(c);
 
-                    if (dispResult.DeviceControlHandlerRva != 0 && dangerousNames.Count > 0)
+                    uint reachStartRva = dispResult.DeviceControlHandlerRva;
+                    if (reachStartRva == 0)
+                    {
+                        bool hasCreate = iatMap.Values.Any(v =>
+                            v.Equals("IoCreateDevice", StringComparison.OrdinalIgnoreCase));
+                        bool hasSymLink = iatMap.Values.Any(v =>
+                            v.Equals("IoCreateSymbolicLink", StringComparison.OrdinalIgnoreCase));
+                        if (hasCreate && hasSymLink)
+                            reachStartRva = headers.Value.EntryPointRva;
+                    }
+
+                    if (reachStartRva != 0 && dangerousNames.Count > 0)
                     {
                         var reachability = DispatchAnalyzer.AnalyzeReachability(
-                            data, headers.Value, dispResult.DeviceControlHandlerRva, iatMap, dangerousNames);
+                            data, headers.Value, reachStartRva, iatMap, dangerousNames);
 
                         foreach (var imp in dr.DangerousImports)
                         {

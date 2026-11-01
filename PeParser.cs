@@ -36,6 +36,7 @@ namespace BYOVDHunter
             public ushort DllCharacteristics;
             public int SectionHeadersStart;
             public int DataDirectoryOffset;
+            public ulong ImageBase;
             public List<SectionEntry> Sections;
         }
 
@@ -68,6 +69,10 @@ namespace BYOVDHunter
 
             if (h.OptionalOffset + 28 > data.Length) return null;
             h.EntryPointRva = BitConverter.ToUInt32(data, h.OptionalOffset + 16);
+            if (h.IsPe32Plus && h.OptionalOffset + 32 <= data.Length)
+                h.ImageBase = BitConverter.ToUInt64(data, h.OptionalOffset + 24);
+            else if (h.OptionalOffset + 32 <= data.Length)
+                h.ImageBase = BitConverter.ToUInt32(data, h.OptionalOffset + 28);
             h.MajorLinkerVersion = data[h.OptionalOffset + 2];
             h.MinorLinkerVersion = data[h.OptionalOffset + 3];
 
