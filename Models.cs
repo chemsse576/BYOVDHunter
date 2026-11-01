@@ -38,6 +38,7 @@ namespace BYOVDHunter
         public bool IsSigned { get; set; }
         public bool IsSignatureValid { get; set; }
         public string SignerName { get; set; }
+        public bool IsMicrosoftSigned { get; set; }
         public bool IsLoaded { get; set; }
         public bool IsWhitelisted { get; set; }
         public string SourceLocation { get; set; }

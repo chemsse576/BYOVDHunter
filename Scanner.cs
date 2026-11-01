@@ -1151,6 +1151,23 @@ namespace BYOVDHunter
             dr.Risk = RiskLevel.Info;
         }
 
+        public static void DemoteMicrosoftSigned(DriverResult dr)
+        {
+            if (!dr.IsMicrosoftSigned) return;
+            if (dr.LolMatch != null || dr.BlocklistMatch != null) return;
+
+            if (dr.Risk == RiskLevel.Critical)
+            {
+                dr.Risk = RiskLevel.High;
+                dr.RiskReason = "[MS-signed demoted] " + dr.RiskReason;
+            }
+            else if (dr.Risk == RiskLevel.High)
+            {
+                dr.Risk = RiskLevel.Medium;
+                dr.RiskReason = "[MS-signed demoted] " + dr.RiskReason;
+            }
+        }
+
         private static string FormatDbMatch(DriverResult dr)
         {
             var parts = new List<string>();

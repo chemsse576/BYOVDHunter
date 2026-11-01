@@ -397,6 +397,32 @@ namespace BYOVDHunter
             Console.ForegroundColor = prev;
         }
 
+        public static void PrintThirdPartyLine(DriverResult dr)
+        {
+            var prev = Console.ForegroundColor;
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.Write("    [INFO] Non-Microsoft: ");
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.Write(dr.FileName);
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            if (!string.IsNullOrEmpty(dr.SignerName))
+                Console.Write($" ({Trunc(dr.SignerName, 30)})");
+            else
+                Console.Write(" (unsigned)");
+            if (dr.IsLoaded)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.Write(" [LOADED]");
+            }
+            if (dr.DangerousImports.Count > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.DarkYellow;
+                Console.Write($" [{dr.DangerousImports.Count} dangerous imports]");
+            }
+            Console.WriteLine();
+            Console.ForegroundColor = prev;
+        }
+
         private static void PrintInfoResultLine(DriverResult dr)
         {
             if (string.IsNullOrEmpty(dr.RiskReason)) return;
@@ -715,7 +741,7 @@ namespace BYOVDHunter
             var d = new Dictionary<string, object>
             {
                 {"fileName", r.FileName}, {"path", r.Path}, {"sha256", r.Sha256},
-                {"signed", r.IsSigned}, {"signerName", r.SignerName},
+                {"signed", r.IsSigned}, {"signerName", r.SignerName}, {"isMicrosoftSigned", r.IsMicrosoftSigned},
                 {"loaded", r.IsLoaded}, {"whitelisted", r.IsWhitelisted},
                 {"framework", r.Framework.ToString()},
                 {"riskLevel", r.Risk.ToString()}, {"riskReason", r.RiskReason},

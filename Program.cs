@@ -198,6 +198,12 @@ namespace BYOVDHunter
                 }
                 catch { }
 
+                if (!string.IsNullOrEmpty(dr.SignerName))
+                {
+                    string lower = dr.SignerName.ToLowerInvariant();
+                    dr.IsMicrosoftSigned = lower.Contains("microsoft");
+                }
+
                 dr.IsWhitelisted = Scanner.IsWhitelisted(dr.FileName, dr.SignerName, driverPath);
 
                 // Whitelist shortcut
@@ -265,6 +271,7 @@ namespace BYOVDHunter
                 }
 
                 Scanner.AssessRisk(dr, sysStatus);
+                Scanner.DemoteMicrosoftSigned(dr);
                 results.Add(dr);
             }
 
@@ -288,6 +295,24 @@ namespace BYOVDHunter
                 if (!highAndAbove)
                 {
                     foreach (var dr in mediums) Output.PrintResult(dr);
+
+                    var thirdParty = results.Where(r =>
+                        !r.IsMicrosoftSigned &&
+                        !r.IsWhitelisted &&
+                        r.LolMatch == null &&
+                        r.BlocklistMatch == null &&
+                        string.IsNullOrEmpty(r.Error) &&
+                        r.Risk <= RiskLevel.Low).ToList();
+
+                    if (thirdParty.Count > 0)
+                    {
+                        Console.WriteLine();
+                        Output.PrintProgress($"Non-Microsoft third-party drivers ({thirdParty.Count}):");
+                        foreach (var dr in thirdParty
+                            .OrderByDescending(r => r.IsLoaded)
+                            .ThenByDescending(r => r.DangerousImports.Count))
+                            Output.PrintThirdPartyLine(dr);
+                    }
 
                     if (lows.Count > 0)
                     {
