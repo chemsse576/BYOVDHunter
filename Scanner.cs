@@ -366,6 +366,64 @@ namespace BYOVDHunter
         [DllImport("psapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern int GetDeviceDriverBaseName(IntPtr ImageBase, StringBuilder lpBaseName, int nSize);
 
+        [DllImport("psapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern int GetDeviceDriverFileName(IntPtr ImageBase, StringBuilder lpFileName, int nSize);
+
+        public static Dictionary<string, string> GetLoadedDriverFullPaths()
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                int needed = 0;
+                EnumDeviceDrivers(null, 0, out needed);
+                if (needed <= 0) return result;
+                IntPtr[] addrs = new IntPtr[needed / IntPtr.Size];
+                if (!EnumDeviceDrivers(addrs, needed, out _)) return result;
+                var sbName = new StringBuilder(260);
+                var sbPath = new StringBuilder(260);
+                string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+                foreach (var addr in addrs)
+                {
+                    if (addr == IntPtr.Zero) continue;
+                    sbName.Clear();
+                    if (GetDeviceDriverBaseName(addr, sbName, sbName.Capacity) <= 0) continue;
+                    string baseName = sbName.ToString();
+
+                    sbPath.Clear();
+                    if (GetDeviceDriverFileName(addr, sbPath, sbPath.Capacity) > 0)
+                    {
+                        string fullPath = NormalizeKernelPath(sbPath.ToString(), winDir);
+                        if (!string.IsNullOrEmpty(fullPath) && File.Exists(fullPath))
+                        {
+                            if (!result.ContainsKey(baseName))
+                                result[baseName] = fullPath;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return result;
+        }
+
+        private static string NormalizeKernelPath(string kernelPath, string winDir)
+        {
+            if (string.IsNullOrEmpty(kernelPath)) return null;
+
+            if (kernelPath.StartsWith(@"\SystemRoot\", StringComparison.OrdinalIgnoreCase))
+                return Path.Combine(winDir, kernelPath.Substring(12));
+            if (kernelPath.StartsWith(@"\??\"))
+                return kernelPath.Substring(4);
+            if (kernelPath.StartsWith(@"\\?\"))
+                return kernelPath.Substring(4);
+            if (kernelPath.StartsWith(@"system32\", StringComparison.OrdinalIgnoreCase))
+                return Path.Combine(winDir, kernelPath);
+
+            if (kernelPath.Length >= 3 && kernelPath[1] == ':')
+                return kernelPath;
+
+            return null;
+        }
+
         #endregion
 
         #region Signature Verification

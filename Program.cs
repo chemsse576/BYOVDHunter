@@ -123,8 +123,26 @@ namespace BYOVDHunter
             Output.PrintInfo($"Found {driverPaths.Count} driver files.");
 
             Output.PrintProgress("Enumerating loaded kernel drivers...");
-            var loadedDrivers = Scanner.GetLoadedDriverBaseNames();
+            var loadedDriverMap = Scanner.GetLoadedDriverFullPaths();
+            var loadedDrivers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var name in loadedDriverMap.Keys)
+                loadedDrivers.Add(name);
+            foreach (var name in Scanner.GetLoadedDriverBaseNames())
+                loadedDrivers.Add(name);
             Output.PrintInfo($"Detected {loadedDrivers.Count} loaded drivers.");
+
+            var driverPathSet = new HashSet<string>(driverPaths, StringComparer.OrdinalIgnoreCase);
+            int addedFromKernel = 0;
+            foreach (var kv in loadedDriverMap)
+            {
+                if (driverPathSet.Add(kv.Value))
+                    addedFromKernel++;
+            }
+            if (addedFromKernel > 0)
+            {
+                driverPaths = driverPathSet.ToList();
+                Output.PrintInfo($"Added {addedFromKernel} loaded drivers from non-standard paths.");
+            }
 
             Output.PrintProgress("Scanning drivers (deep analysis: imports, dispatch, reachability, taint)...");
             Console.WriteLine();
