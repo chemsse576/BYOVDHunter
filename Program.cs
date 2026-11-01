@@ -200,7 +200,9 @@ namespace BYOVDHunter
                 if (!string.IsNullOrEmpty(dr.SignerName))
                 {
                     string lower = dr.SignerName.ToLowerInvariant();
-                    dr.IsMicrosoftSigned = lower.Contains("microsoft");
+                    dr.IsMicrosoftSigned = lower.Contains("microsoft") ||
+                        (lower.Contains("catalog-signed") &&
+                         driverPath.ToLowerInvariant().Contains(@"\windows\system32"));
                 }
 
                 dr.IsWhitelisted = Scanner.IsWhitelisted(dr.FileName, dr.SignerName, driverPath);

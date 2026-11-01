@@ -889,9 +889,11 @@ namespace BYOVDHunter
             bool hasMethodNeither = dr.IoctlCodes.Any(c => c.Method == 3);
             bool noValidation = dr.Dispatch != null &&
                 dr.Dispatch.BufferValidation == BufferValidation.NoValidation;
+            bool weakValidation = noValidation ||
+                (hasMethodNeither && dr.Dispatch?.BufferValidation != BufferValidation.ProperValidation);
             bool hasHandlerFound = dr.Dispatch != null && dr.Dispatch.DeviceControlHandlerRva != 0;
 
-            if (hasTier1Direct && hasDeviceExposure && (hasMethodNeither || noValidation) && dr.IsLoaded)
+            if (hasTier1Direct && hasDeviceExposure && weakValidation && dr.IsLoaded)
             {
                 dr.Risk = RiskLevel.Critical;
                 dr.RiskReason = "Tier 1 DIRECT + device exposure + weak validation - LOADED";
