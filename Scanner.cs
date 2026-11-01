@@ -862,6 +862,19 @@ namespace BYOVDHunter
 
         #region Risk Assessment
 
+        private static readonly HashSet<string> CriticalImports = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "ZwTerminateProcess", "NtTerminateProcess",
+            "ZwOpenProcess", "NtOpenProcess",
+            "PsLookupProcessByProcessId",
+            "MmCopyMemory", "MmMapLockedPagesSpecifyCache",
+            "MmMapIoSpace", "MmMapIoSpaceEx",
+            "KeStackAttachProcess", "ObOpenObjectByPointer",
+            "ZwCreateFile",
+            "ZwMapViewOfSection", "NtMapViewOfSection",
+            "SePrivilegeCheck", "PsReferencePrimaryToken"
+        };
+
         public static void AssessRisk(DriverResult dr, SystemProtection sysStatus)
         {
             if (dr.IsWhitelisted && dr.LolMatch == null && dr.BlocklistMatch == null)
@@ -872,332 +885,145 @@ namespace BYOVDHunter
             }
 
             bool hasLolOrBlocklist = dr.LolMatch != null || dr.BlocklistMatch != null;
-            bool hasDangerousImports = dr.DangerousImports.Count > 0;
-            bool hasDeviceExposure = dr.Devices.Count > 0;
-            bool hasCompromisedCert = dr.CertFlag != null && dr.CertFlag.IsCompromised;
-            bool hasFamilyMatch = dr.FamilyMatch != null;
-            bool hasVendorMatch = dr.VendorMatch != null;
 
-            bool hasReachable = dr.DangerousImports.Any(i =>
-                i.Reachability == Reachability.Direct || i.Reachability == Reachability.Indirect);
-            bool hasTainted = dr.DangerousImports.Any(i =>
-                i.Taint == TaintStatus.Tainted || i.Taint == TaintStatus.LikelyTainted);
-            bool allNotReachable = hasDangerousImports && dr.DangerousImports.All(i =>
-                i.Reachability == Reachability.NotReachable);
+            if (hasLolOrBlocklist)
+            {
+                if (dr.IsLoaded)
+                {
+                    dr.Risk = RiskLevel.Critical;
+                    dr.RiskReason = FormatDbMatch(dr) + " - LOADED in kernel";
+                    dr.Impact = "Known exploitable - check CVE details";
+                    dr.ExploitUse = "BYOVD";
+                    if (dr.BlocklistMatch != null && !sysStatus.HvciEnabled)
+                        dr.Note = "HVCI is OFF - blocklist NOT enforced";
+                }
+                else
+                {
+                    dr.Risk = RiskLevel.High;
+                    dr.RiskReason = FormatDbMatch(dr) + " - on disk (not loaded)";
+                    dr.Impact = "Available for drop-and-load BYOVD attack";
+                    dr.ExploitUse = "BYOVD (requires load)";
+                }
+                return;
+            }
 
-            bool onlyGenericImports = hasDangerousImports &&
-                dr.DangerousImports.All(i =>
-                    i.FunctionName.Equals("ZwClose", StringComparison.OrdinalIgnoreCase) ||
-                    i.FunctionName.Equals("IoCreateDevice", StringComparison.OrdinalIgnoreCase));
+            bool hasDeviceExposure = dr.Devices.Count > 0 ||
+                dr.DangerousImports.Any(i =>
+                    i.FunctionName.Equals("IoCreateDevice", StringComparison.OrdinalIgnoreCase) ||
+                    i.FunctionName.Equals("IoCreateSymbolicLink", StringComparison.OrdinalIgnoreCase));
+
+            bool hasCriticalDirect = dr.DangerousImports.Any(i =>
+                i.Reachability == Reachability.Direct && CriticalImports.Contains(i.FunctionName));
+
+            var reachableImports = dr.DangerousImports.Where(i =>
+                i.Reachability == Reachability.Direct || i.Reachability == Reachability.Indirect).ToList();
+
+            bool onlyZwClose = reachableImports.Count > 0 &&
+                reachableImports.All(i => i.FunctionName.Equals("ZwClose", StringComparison.OrdinalIgnoreCase));
+
+            if (onlyZwClose)
+            {
+                dr.Risk = RiskLevel.Info;
+                dr.RiskReason = "Only ZwClose reachable (generic import)";
+                return;
+            }
+
+            if (dr.IsMicrosoftSigned && !hasCriticalDirect)
+            {
+                dr.Risk = dr.DangerousImports.Count > 0 ? RiskLevel.Medium : RiskLevel.Info;
+                dr.RiskReason = "Microsoft signed, no critical import DIRECT";
+                return;
+            }
+
+            bool hasCriticalIndirectLive = dr.DangerousImports.Any(i =>
+                i.Reachability == Reachability.Indirect &&
+                CriticalImports.Contains(i.FunctionName) &&
+                i.Taint != TaintStatus.NotTainted);
 
             bool hasMethodNeither = dr.IoctlCodes.Any(c => c.Method == 3);
-            bool hasAnyAccess = dr.IoctlCodes.Any(c => c.Access == 0);
-            bool noChecksOnCreate = dr.Dispatch != null &&
-                dr.Dispatch.CreateAccessCheck == AccessCheckVerdict.NoChecks;
             bool noValidation = dr.Dispatch != null &&
                 dr.Dispatch.BufferValidation == BufferValidation.NoValidation;
-            bool isWdm = dr.Framework == DriverFramework.WDM;
-            bool isKmdf = dr.Framework == DriverFramework.KMDF;
+            bool basicValidation = dr.Dispatch != null &&
+                dr.Dispatch.BufferValidation == BufferValidation.BasicValidation;
 
-            // B14: Unsafe RtlQueryRegistryValues - CVE-2025-8412 pattern
-            if (dr.Behaviors.HasFlag(BehaviorTag.B14_UnsafeRtlQueryRegistry) && dr.IsLoaded)
+            if (hasCriticalDirect && hasDeviceExposure && (hasMethodNeither || noValidation) && dr.IsLoaded)
             {
                 dr.Risk = RiskLevel.Critical;
-                dr.RiskReason = "Unsafe RtlQueryRegistryValues (stack buffer overflow pattern) - LOADED";
-                dr.Impact = "Kernel stack overflow / Code Integrity bypass / arbitrary code execution";
-                dr.ExploitUse = "BYOVD / DSE bypass (CVE-2025-8412 pattern)";
-                dr.Note = "RtlQueryRegistryValues with fixed-size stack buffer and RTL_QUERY_REGISTRY_DIRECT. Attacker controls registry value size.";
-                return;
-            }
-
-            if (dr.Behaviors.HasFlag(BehaviorTag.B14_UnsafeRtlQueryRegistry) && !dr.IsLoaded)
-            {
-                dr.Risk = RiskLevel.High;
-                dr.RiskReason = "Unsafe RtlQueryRegistryValues (stack buffer overflow pattern) - on disk";
-                dr.Impact = "Kernel stack overflow / Code Integrity bypass (requires load)";
-                dr.ExploitUse = "BYOVD / DSE bypass (CVE-2025-8412 pattern)";
-                return;
-            }
-
-            // B6: Code Integrity Tampering confirmed
-            if (dr.Behaviors.HasFlag(BehaviorTag.B6_CodeIntegrityTampering) && hasReachable && dr.IsLoaded)
-            {
-                dr.Risk = RiskLevel.Critical;
-                dr.RiskReason = "Code Integrity tampering path confirmed (g_CiEnabled/g_CiOptions) - LOADED";
-                dr.Impact = "DSE bypass / unsigned driver loading / rootkit installation";
-                dr.ExploitUse = "BYOVD / DSE bypass";
-                return;
-            }
-
-            // B4: Dynamic kernel code execution
-            if (dr.Behaviors.HasFlag(BehaviorTag.B4_DynamicKernelCodeExec) && hasTainted && dr.IsLoaded)
-            {
-                dr.Risk = RiskLevel.Critical;
-                dr.RiskReason = "Dynamic kernel code execution with tainted input - LOADED";
-                dr.Impact = "Arbitrary kernel code execution";
-                dr.ExploitUse = "BYOVD / kernel shellcode injection";
-                return;
-            }
-
-            // B7: Remote handle closure
-            if (dr.Behaviors.HasFlag(BehaviorTag.B7_RemoteHandleClosure) && hasTainted && dr.IsLoaded)
-            {
-                dr.Risk = RiskLevel.High;
-                dr.RiskReason = "Remote handle closure with tainted input - LOADED";
-                dr.Impact = "EDR handle disruption / file lock bypass";
-                dr.ExploitUse = "BYOVD / EDR evasion";
-                return;
-            }
-
-            // B3: Unsafe pool allocation with no validation
-            if (dr.Behaviors.HasFlag(BehaviorTag.B3_UnsafePoolAllocation) && noValidation && dr.IsLoaded)
-            {
-                dr.Risk = RiskLevel.High;
-                dr.RiskReason = "Unsafe pool allocation with no buffer validation - LOADED";
-                dr.Impact = "Kernel pool overflow / privilege escalation";
-                dr.ExploitUse = "BYOVD / LPE";
-                return;
-            }
-
-            // CRITICAL
-            if (hasLolOrBlocklist && dr.IsLoaded)
-            {
-                dr.Risk = RiskLevel.Critical;
-                dr.RiskReason = FormatDbMatch(dr) + " - LOADED in kernel";
-                dr.Impact = "Known exploitable - check CVE details";
-                dr.ExploitUse = "BYOVD";
-                if (dr.BlocklistMatch != null && !sysStatus.HvciEnabled)
-                    dr.Note = "HVCI is OFF - blocklist NOT enforced";
-                return;
-            }
-
-            if (hasReachable && hasTainted && hasDeviceExposure && dr.IsLoaded && !dr.IsWhitelisted)
-            {
-                dr.Risk = RiskLevel.Critical;
-                dr.RiskReason = "IOCTL path confirmed + tainted input - LOADED";
+                dr.RiskReason = "Critical import DIRECT + device exposure + weak validation - LOADED";
                 dr.Impact = BuildImpactString(dr);
                 dr.ExploitUse = BuildExploitUse(dr);
-                dr.Note = "Confirmed exploitable. Ready for PoC.";
+                if (dr.Dispatch != null && !dr.Dispatch.HasPreviousModeCheck)
+                    dr.Note = "No PreviousMode check";
                 return;
             }
 
-            if (hasReachable && hasDeviceExposure && noChecksOnCreate && noValidation &&
-                (hasMethodNeither || hasAnyAccess) && dr.IsLoaded && !dr.IsWhitelisted)
-            {
-                dr.Risk = RiskLevel.Critical;
-                dr.RiskReason = "Reachable + no checks + no validation + METHOD_NEITHER - LOADED";
-                dr.Impact = BuildImpactString(dr);
-                dr.ExploitUse = BuildExploitUse(dr);
-                dr.Note = "Maximum attack surface. Ready for PoC.";
-                return;
-            }
-
-            var criticalCategories = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "PhysMem", "ProcKill", "ProcManip", "IoPort", "MSR", "CallbackUnreg" };
-            bool physMemDowngraded = dr.Behaviors.HasFlag(BehaviorTag.B11_PhysicalMemoryMapping) &&
-                !dr.Behaviors.HasFlag(BehaviorTag.B8_ArbitraryMemoryWrite);
-            bool hasReachableCriticalCategory = dr.DangerousImports.Any(i =>
-                (i.Reachability == Reachability.Direct || i.Reachability == Reachability.Indirect) &&
-                criticalCategories.Contains(i.Category ?? "") &&
-                !(physMemDowngraded && i.Category == "PhysMem"));
-
-            if (hasReachableCriticalCategory && hasDeviceExposure && dr.IsLoaded && !dr.IsWhitelisted)
-            {
-                dr.Risk = RiskLevel.Critical;
-                dr.RiskReason = "IOCTL-to-import path confirmed (high-risk category) - LOADED";
-                dr.Impact = BuildImpactString(dr);
-                dr.ExploitUse = BuildExploitUse(dr);
-                dr.Note = "0-day BYOVD candidate. Manual IOCTL reversing recommended.";
-                return;
-            }
-
-            if (hasReachable && hasDeviceExposure && dr.IsLoaded && !dr.IsWhitelisted)
+            if (hasCriticalIndirectLive && hasDeviceExposure && dr.IsLoaded)
             {
                 dr.Risk = RiskLevel.High;
-                dr.RiskReason = "IOCTL-to-import path confirmed (lower-risk category) - LOADED";
+                dr.RiskReason = "Critical import INDIRECT + device exposure - LOADED";
                 dr.Impact = BuildImpactString(dr);
                 dr.ExploitUse = BuildExploitUse(dr);
                 return;
             }
 
-            // HIGH
-            if (hasLolOrBlocklist && !dr.IsLoaded)
+            if (hasCriticalDirect && hasDeviceExposure && !dr.IsLoaded)
             {
                 dr.Risk = RiskLevel.High;
-                dr.RiskReason = FormatDbMatch(dr) + " - on disk (not loaded)";
-                dr.Impact = "Available for drop-and-load BYOVD attack";
-                dr.ExploitUse = "BYOVD (requires load)";
-                return;
-            }
-
-            if (hasReachable && hasDeviceExposure && !dr.IsLoaded && !dr.IsWhitelisted)
-            {
-                dr.Risk = RiskLevel.High;
-                dr.RiskReason = "IOCTL-to-import path confirmed - on disk";
+                dr.RiskReason = "Critical import DIRECT + device exposure - on disk";
                 dr.Impact = BuildImpactString(dr);
                 dr.ExploitUse = BuildExploitUse(dr) + " (requires load)";
                 return;
             }
 
-            if (hasCompromisedCert && dr.IsLoaded)
+            if (hasCriticalDirect && dr.IsLoaded && basicValidation)
             {
                 dr.Risk = RiskLevel.High;
-                dr.RiskReason = $"Compromised certificate: {dr.CertFlag.Reason}";
-                dr.Impact = "Potentially malicious driver";
-                return;
-            }
-
-            if (isWdm && hasDangerousImports && noChecksOnCreate && dr.IsLoaded && !dr.IsWhitelisted)
-            {
-                dr.Risk = RiskLevel.High;
-                dr.RiskReason = "WDM + dangerous imports + no access checks + LOADED";
+                dr.RiskReason = "Critical import DIRECT + partial validation - LOADED";
                 dr.Impact = BuildImpactString(dr);
                 dr.ExploitUse = BuildExploitUse(dr);
                 return;
             }
 
-            if (hasVendorMatch && hasDangerousImports && dr.IsLoaded)
-            {
-                dr.Risk = RiskLevel.High;
-                dr.RiskReason = $"Known vuln vendor ({dr.VendorMatch.VendorName}) + dangerous imports + LOADED";
-                dr.Impact = BuildImpactString(dr);
-                dr.ExploitUse = BuildExploitUse(dr);
-                return;
-            }
+            bool hasDangerousImports = dr.DangerousImports.Count > 0;
+            bool onlyGenericImports = hasDangerousImports &&
+                dr.DangerousImports.All(i =>
+                    i.FunctionName.Equals("ZwClose", StringComparison.OrdinalIgnoreCase) ||
+                    i.FunctionName.Equals("IoCreateDevice", StringComparison.OrdinalIgnoreCase));
 
-            if (hasFamilyMatch && dr.IsLoaded)
-            {
-                dr.Risk = RiskLevel.High;
-                dr.RiskReason = $"IOCTL matches {dr.FamilyMatch.FamilyName} + LOADED";
-                dr.Impact = dr.FamilyMatch.Description;
-                dr.ExploitUse = "BYOVD";
-                return;
-            }
-
-            // MEDIUM
-            if (allNotReachable && hasDangerousImports && !onlyGenericImports)
+            if (hasDangerousImports && !onlyGenericImports && hasDeviceExposure)
             {
                 dr.Risk = RiskLevel.Medium;
-                dr.RiskReason = "Imports NOT_REACHABLE from IOCTL handler (FP reduced)";
-                dr.Note = "Likely internal hardware init use only";
+                dr.RiskReason = dr.IsLoaded
+                    ? "Dangerous imports + device exposure (non-critical path)"
+                    : "Dangerous imports + device exposure (not loaded)";
                 return;
             }
 
-            if (hasDangerousImports && !onlyGenericImports && !hasDeviceExposure)
+            if (hasDangerousImports && !onlyGenericImports && dr.IsLoaded)
             {
                 dr.Risk = RiskLevel.Medium;
-                dr.RiskReason = "Dangerous imports but no device exposure found";
+                dr.RiskReason = "Dangerous imports + loaded (no device exposure)";
                 return;
             }
 
-            if (isKmdf && hasDangerousImports && !onlyGenericImports)
+            if (hasDangerousImports && !onlyGenericImports)
             {
-                dr.Risk = RiskLevel.Medium;
-                dr.RiskReason = "KMDF driver with dangerous imports (framework protection)";
+                dr.Risk = RiskLevel.Low;
+                dr.RiskReason = "Dangerous imports (not loaded, no device exposure)";
                 return;
             }
 
-            if (hasDangerousImports && !onlyGenericImports && hasDeviceExposure && !dr.IsLoaded)
-            {
-                dr.Risk = RiskLevel.Medium;
-                dr.RiskReason = "Dangerous imports + device exposure (not loaded)";
-                dr.Impact = BuildImpactString(dr);
-                return;
-            }
-
-            if (hasCompromisedCert && !dr.IsLoaded)
-            {
-                dr.Risk = RiskLevel.Medium;
-                dr.RiskReason = $"Compromised certificate ({dr.CertFlag.Reason}) - not loaded";
-                return;
-            }
-
-            if (hasFamilyMatch && !dr.IsLoaded)
-            {
-                dr.Risk = RiskLevel.Medium;
-                dr.RiskReason = $"IOCTL matches {dr.FamilyMatch.FamilyName} - not loaded";
-                return;
-            }
-
-            if (hasVendorMatch && hasDangerousImports && !onlyGenericImports && !dr.IsLoaded)
-            {
-                dr.Risk = RiskLevel.Medium;
-                dr.RiskReason = $"Known vuln vendor ({dr.VendorMatch.VendorName}) - not loaded";
-                return;
-            }
-
-            if (hasDangerousImports && !onlyGenericImports && hasDeviceExposure && dr.IsLoaded && !dr.IsWhitelisted)
-            {
-                dr.Risk = RiskLevel.Medium;
-                dr.RiskReason = "Dangerous imports + device exposure + LOADED (reachability undetermined)";
-                dr.Impact = BuildImpactString(dr);
-                return;
-            }
-
-            if (hasDangerousImports && !onlyGenericImports && dr.IsLoaded && !dr.IsWhitelisted)
-            {
-                dr.Risk = RiskLevel.Medium;
-                dr.RiskReason = "Dangerous imports + LOADED (no device exposure found)";
-                return;
-            }
-
-            // LOW
             if (!dr.IsSigned && !hasDangerousImports)
             {
                 dr.Risk = RiskLevel.Low;
-                dr.RiskReason = "Unsigned driver, no dangerous imports";
-                return;
-            }
-
-            if (dr.Metadata != null && dr.Metadata.AgeYears > 10 && !hasDangerousImports)
-            {
-                dr.Risk = RiskLevel.Low;
-                dr.RiskReason = $"Very old driver ({dr.Metadata.CompileDate}), no dangerous imports";
-                return;
-            }
-
-            if (dr.Mitigations != null && dr.Mitigations.MissingCount >= 2 && !hasDangerousImports)
-            {
-                dr.Risk = RiskLevel.Low;
-                dr.RiskReason = "Missing modern mitigations, no dangerous imports";
-                return;
-            }
-
-            if (dr.SuspiciousStrings.Count > 0 && !hasDangerousImports)
-            {
-                dr.Risk = RiskLevel.Low;
-                dr.RiskReason = "Suspicious strings found, no dangerous imports";
-                return;
-            }
-
-            if (dr.VersionInfo != null && (dr.VersionInfo.HasSuspiciousKeywords || dr.VersionInfo.FilenameMismatch))
-            {
-                dr.Risk = RiskLevel.Low;
-                dr.RiskReason = dr.VersionInfo.FilenameMismatch
-                    ? "Filename mismatch with OriginalFilename"
-                    : "Suspicious keywords in metadata";
+                dr.RiskReason = "Unsigned driver";
                 return;
             }
 
             dr.Risk = RiskLevel.Info;
         }
 
-        public static void DemoteMicrosoftSigned(DriverResult dr)
-        {
-            if (!dr.IsMicrosoftSigned) return;
-            if (dr.LolMatch != null || dr.BlocklistMatch != null) return;
-
-            if (dr.Risk == RiskLevel.Critical)
-            {
-                dr.Risk = RiskLevel.High;
-                dr.RiskReason = "[MS-signed demoted] " + dr.RiskReason;
-            }
-            else if (dr.Risk == RiskLevel.High)
-            {
-                dr.Risk = RiskLevel.Medium;
-                dr.RiskReason = "[MS-signed demoted] " + dr.RiskReason;
-            }
-        }
+        public static void DemoteMicrosoftSigned(DriverResult dr) { }
 
         private static string FormatDbMatch(DriverResult dr)
         {
