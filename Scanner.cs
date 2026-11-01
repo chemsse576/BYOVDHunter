@@ -1115,6 +1115,21 @@ namespace BYOVDHunter
                 return;
             }
 
+            if (hasDangerousImports && !onlyGenericImports && hasDeviceExposure && dr.IsLoaded && !dr.IsWhitelisted)
+            {
+                dr.Risk = RiskLevel.Medium;
+                dr.RiskReason = "Dangerous imports + device exposure + LOADED (reachability undetermined)";
+                dr.Impact = BuildImpactString(dr);
+                return;
+            }
+
+            if (hasDangerousImports && !onlyGenericImports && dr.IsLoaded && !dr.IsWhitelisted)
+            {
+                dr.Risk = RiskLevel.Medium;
+                dr.RiskReason = "Dangerous imports + LOADED (no device exposure found)";
+                return;
+            }
+
             // LOW
             if (!dr.IsSigned && !hasDangerousImports)
             {

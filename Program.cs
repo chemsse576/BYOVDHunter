@@ -21,7 +21,7 @@ namespace BYOVDHunter
             bool scanDriverStore = HasFlag(args, "--scan-driverstore");
             bool verbose = HasFlag(args, "--verbose");
             bool criticalOnly = HasFlag(args, "--critical-only");
-            bool highAndAbove = HasFlag(args, "--high-and-above");
+            bool highAndAbove = HasFlag(args, "--high-and-above"); // legacy, now default
             bool loadedOnly = HasFlag(args, "--loaded-only");
             bool noTaint = HasFlag(args, "--no-taint");
             bool noColor = HasFlag(args, "--no-color");
@@ -45,9 +45,8 @@ namespace BYOVDHunter
                 Console.WriteLine("  --no-whitelist       Disable OS driver whitelist");
                 Console.WriteLine("  --scan-path <dir>    Scan additional directory for .sys files");
                 Console.WriteLine("  --scan-driverstore   Also scan DriverStore\\FileRepository");
-                Console.WriteLine("  --verbose            Show all drivers including INFO/clean");
+                Console.WriteLine("  --verbose            Show MEDIUM, LOW, INFO and third-party drivers");
                 Console.WriteLine("  --critical-only      Show only CRITICAL findings");
-                Console.WriteLine("  --high-and-above     Show only HIGH and CRITICAL");
                 Console.WriteLine("  --loaded-only        Only analyze loaded drivers");
                 Console.WriteLine("  --no-taint           Skip taint analysis (faster)");
                 Console.WriteLine("  --no-color           Disable colored output");
@@ -285,52 +284,49 @@ namespace BYOVDHunter
             foreach (var dr in criticals) Output.PrintResult(dr);
 
             if (!criticalOnly)
-            {
                 foreach (var dr in highs) Output.PrintResult(dr);
 
-                if (!highAndAbove)
+            if (verbose)
+            {
+                foreach (var dr in mediums) Output.PrintResult(dr);
+
+                var thirdParty = results.Where(r =>
+                    !r.IsMicrosoftSigned &&
+                    !r.IsWhitelisted &&
+                    r.LolMatch == null &&
+                    r.BlocklistMatch == null &&
+                    string.IsNullOrEmpty(r.Error) &&
+                    r.Risk <= RiskLevel.Low).ToList();
+
+                if (thirdParty.Count > 0)
                 {
-                    foreach (var dr in mediums) Output.PrintResult(dr);
-
-                    var thirdParty = results.Where(r =>
-                        !r.IsMicrosoftSigned &&
-                        !r.IsWhitelisted &&
-                        r.LolMatch == null &&
-                        r.BlocklistMatch == null &&
-                        string.IsNullOrEmpty(r.Error) &&
-                        r.Risk <= RiskLevel.Low).ToList();
-
-                    if (thirdParty.Count > 0)
-                    {
-                        Console.WriteLine();
-                        Output.PrintProgress($"Non-Microsoft third-party drivers ({thirdParty.Count}):");
-                        foreach (var dr in thirdParty
-                            .OrderByDescending(r => r.IsLoaded)
-                            .ThenByDescending(r => r.DangerousImports.Count))
-                            Output.PrintThirdPartyLine(dr);
-                    }
-
-                    if (lows.Count > 0)
-                    {
-                        Console.WriteLine();
-                        Output.PrintProgress($"Low-risk findings ({lows.Count}):");
-                        foreach (var dr in lows) Output.PrintResult(dr);
-                    }
-
-                    if (verbose && infos.Count > 0)
-                    {
-                        Console.WriteLine();
-                        Output.PrintProgress($"Info findings ({infos.Count}):");
-                        foreach (var dr in infos) Output.PrintResult(dr);
-                    }
-                    else if (infos.Count > 0 && !noWhitelist)
-                    {
-                        Console.WriteLine();
-                        int wl = infos.Count(i => i.IsWhitelisted);
-                        if (wl > 0)
-                            Output.PrintProgress($"Whitelisted drivers: {wl} (use --no-whitelist to analyze, --verbose to list)");
-                    }
+                    Console.WriteLine();
+                    Output.PrintProgress($"Non-Microsoft third-party drivers ({thirdParty.Count}):");
+                    foreach (var dr in thirdParty
+                        .OrderByDescending(r => r.IsLoaded)
+                        .ThenByDescending(r => r.DangerousImports.Count))
+                        Output.PrintThirdPartyLine(dr);
                 }
+
+                if (lows.Count > 0)
+                {
+                    Console.WriteLine();
+                    Output.PrintProgress($"Low-risk findings ({lows.Count}):");
+                    foreach (var dr in lows) Output.PrintResult(dr);
+                }
+
+                if (infos.Count > 0)
+                {
+                    Console.WriteLine();
+                    Output.PrintProgress($"Info findings ({infos.Count}):");
+                    foreach (var dr in infos) Output.PrintResult(dr);
+                }
+            }
+            else if (!criticalOnly)
+            {
+                int hidden = mediums.Count + lows.Count;
+                if (hidden > 0)
+                    Output.PrintInfo($"{mediums.Count} MEDIUM + {lows.Count} LOW findings hidden (use --verbose to show)");
             }
 
             // Exploitable recap
