@@ -16,88 +16,35 @@ namespace BYOVDHunter
         private static readonly Dictionary<string, (string Category, string Description)> DangerousImportDb =
             new Dictionary<string, (string, string)>(StringComparer.OrdinalIgnoreCase)
         {
-            // Physical memory access
-            {"MmMapIoSpace", ("PhysMem", "Map physical memory to virtual address")},
-            {"MmMapIoSpaceEx", ("PhysMem", "Map physical memory to virtual address (extended)")},
-            {"MmMapLockedPages", ("PhysMem", "Map locked pages to user/kernel space")},
-            {"MmMapLockedPagesSpecifyCache", ("PhysMem", "Map locked pages with cache type")},
-            {"MmCopyMemory", ("PhysMem", "Copy arbitrary physical/virtual memory")},
-            {"MmGetPhysicalAddress", ("PhysMem", "Translate virtual to physical address")},
-            {"ZwMapViewOfSection", ("PhysMem", "Map section into process address space")},
-            {"NtMapViewOfSection", ("PhysMem", "Map section into process address space")},
-            {"MmMapViewInSystemSpace", ("PhysMem", "Map view in system space")},
-
-            // Process manipulation (EDR killer)
+            // Tier 1 — Direct exploitation primitives
             {"ZwTerminateProcess", ("ProcKill", "Terminate any process")},
             {"NtTerminateProcess", ("ProcKill", "Terminate any process")},
             {"ZwOpenProcess", ("ProcManip", "Open handle to any process")},
             {"NtOpenProcess", ("ProcManip", "Open handle to any process")},
-            {"ZwWriteVirtualMemory", ("ProcManip", "Write to process memory")},
-            {"NtWriteVirtualMemory", ("ProcManip", "Write to process memory")},
-            {"ZwReadVirtualMemory", ("ProcManip", "Read process memory")},
-            {"NtReadVirtualMemory", ("ProcManip", "Read process memory")},
-            {"ZwAllocateVirtualMemory", ("ProcManip", "Allocate memory in process")},
-            {"NtAllocateVirtualMemory", ("ProcManip", "Allocate memory in process")},
-            {"ZwProtectVirtualMemory", ("ProcManip", "Change memory protections")},
-            {"NtProtectVirtualMemory", ("ProcManip", "Change memory protections")},
             {"PsLookupProcessByProcessId", ("ProcManip", "Resolve process from PID")},
-            {"KeAttachProcess", ("ProcManip", "Attach to process context")},
+            {"MmCopyMemory", ("PhysMem", "Copy arbitrary physical/virtual memory")},
+            {"MmCopyVirtualMemory", ("PhysMem", "Copy between process virtual memory")},
+            {"MmMapIoSpace", ("PhysMem", "Map physical memory to virtual address")},
+            {"MmMapIoSpaceEx", ("PhysMem", "Map physical memory to virtual address (extended)")},
+            {"MmMapLockedPagesSpecifyCache", ("PhysMem", "Map locked pages with cache type")},
+            {"MmMapLockedPages", ("PhysMem", "Map locked pages to user/kernel space")},
+            {"ZwMapViewOfSection", ("PhysMem", "Map section into process address space")},
+            {"NtMapViewOfSection", ("PhysMem", "Map section into process address space")},
             {"KeStackAttachProcess", ("ProcManip", "Attach to process context (stack)")},
-            {"ObOpenObjectByPointer", ("ProcManip", "Get handle from kernel object")},
-            {"PsSuspendProcess", ("ProcManip", "Suspend process (stealth EDR kill)")},
 
-            // Token/privilege manipulation
+            // Tier 2 — Indirect exploitation primitives
+            {"ObOpenObjectByPointer", ("ProcManip", "Get handle from kernel object pointer")},
+            {"ObUnRegisterCallbacks", ("CallbackUnreg", "Unregister object callbacks - can blind EDR")},
+            {"CmUnRegisterCallback", ("CallbackUnreg", "Unregister registry callback - can blind EDR")},
+            {"PsSetCreateProcessNotifyRoutineEx", ("CallbackReg", "Register/unregister process callbacks (Ex)")},
+            {"PsSetCreateProcessNotifyRoutine", ("CallbackReg", "Register/unregister process callbacks")},
+            {"PsSetLoadImageNotifyRoutine", ("CallbackReg", "Register/unregister image load callbacks")},
+            {"PsSetCreateThreadNotifyRoutine", ("CallbackReg", "Register/unregister thread callbacks")},
+            {"FltUnregisterFilter", ("CallbackUnreg", "Unregister minifilter - can blind filesystem EDR")},
             {"PsReferencePrimaryToken", ("TokenManip", "Access process token")},
             {"PsImpersonateClient", ("TokenManip", "Impersonate caller")},
-            {"SeCreateAccessState", ("TokenManip", "Create access state")},
-            {"SeCaptureSubjectContext", ("TokenManip", "Capture security context")},
-
-            // Kernel callback manipulation (EDR blinding)
-            {"PsSetCreateProcessNotifyRoutine", ("CallbackReg", "Register/unregister process callbacks")},
-            {"PsSetCreateProcessNotifyRoutineEx", ("CallbackReg", "Register/unregister process callbacks (Ex)")},
-            {"PsSetCreateThreadNotifyRoutine", ("CallbackReg", "Register/unregister thread callbacks")},
-            {"PsSetCreateThreadNotifyRoutineEx", ("CallbackReg", "Register/unregister thread callbacks (Ex)")},
-            {"PsSetLoadImageNotifyRoutine", ("CallbackReg", "Register/unregister image load callbacks")},
-            {"PsSetLoadImageNotifyRoutineEx", ("CallbackReg", "Register/unregister image load callbacks (Ex)")},
-            {"CmRegisterCallback", ("CallbackReg", "Register registry callback")},
-            {"CmRegisterCallbackEx", ("CallbackReg", "Register registry callback (Ex)")},
-            {"CmUnRegisterCallback", ("CallbackUnreg", "UNREGISTER registry callback - can blind EDR")},
-            {"ObRegisterCallbacks", ("CallbackReg", "Register object callbacks")},
-            {"ObUnRegisterCallbacks", ("CallbackUnreg", "UNREGISTER object callbacks - can blind EDR")},
-            {"FltUnregisterFilter", ("CallbackUnreg", "Unregister minifilter - can blind filesystem EDR")},
-
-            // I/O port access (firmware/BIOS)
-            {"READ_PORT_UCHAR", ("IoPort", "Read I/O port (byte)")},
-            {"READ_PORT_USHORT", ("IoPort", "Read I/O port (word)")},
-            {"READ_PORT_ULONG", ("IoPort", "Read I/O port (dword)")},
-            {"WRITE_PORT_UCHAR", ("IoPort", "Write I/O port (byte)")},
-            {"WRITE_PORT_USHORT", ("IoPort", "Write I/O port (word)")},
-            {"WRITE_PORT_ULONG", ("IoPort", "Write I/O port (dword)")},
-
-            // MSR access
-            {"__readmsr", ("MSR", "Read Model Specific Register")},
-            {"__writemsr", ("MSR", "Write Model Specific Register")},
-            {"HalSetBusDataByOffset", ("MSR", "Write to PCI config space")},
-
-            // Handle closure (remote handle disruption)
-            {"ZwClose", ("HandleClose", "Close object handle")},
-
-            // Registry from kernel
-            {"RtlQueryRegistryValues", ("RegQuery", "Query registry values (potential stack buffer overflow)")},
-            {"ZwSetValueKey", ("Registry", "Modify registry value")},
-            {"ZwDeleteValueKey", ("Registry", "Delete registry value")},
-            {"ZwCreateKey", ("Registry", "Create registry key")},
-            {"ZwDeleteKey", ("Registry", "Delete registry key")},
-
-            // File system from kernel
             {"ZwCreateFile", ("FileSystem", "Kernel-level file create/open")},
             {"ZwWriteFile", ("FileSystem", "Kernel-level file write")},
-            {"ZwDeleteFile", ("FileSystem", "Kernel-level file delete")},
-            {"IoCreateFileEx", ("FileSystem", "Create/open file (extended)")},
-
-            // Device creation
-            {"IoCreateDevice", ("Device", "Create device object (potential IOCTL endpoint)")},
-            {"IoCreateSymbolicLink", ("Device", "Create symbolic link (userland-accessible name)")},
         };
 
         public static List<DangerousImport> FindDangerousImports(byte[] data)
@@ -547,6 +494,11 @@ namespace BYOVDHunter
                 if (headers != null)
                 {
                     var iatMap = PeParser.GetImportAddressTable(data);
+
+                    dr.HasDeviceCreation = iatMap.Values.Any(v =>
+                        v.Equals("IoCreateDevice", StringComparison.OrdinalIgnoreCase) ||
+                        v.Equals("IoCreateSymbolicLink", StringComparison.OrdinalIgnoreCase));
+
                     var dangerousNames = new HashSet<string>(
                         dr.DangerousImports.Select(i => i.FunctionName), StringComparer.OrdinalIgnoreCase);
 
@@ -862,17 +814,27 @@ namespace BYOVDHunter
 
         #region Risk Assessment
 
-        private static readonly HashSet<string> CriticalImports = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        private static readonly HashSet<string> Tier1Imports = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "ZwTerminateProcess", "NtTerminateProcess",
             "ZwOpenProcess", "NtOpenProcess",
             "PsLookupProcessByProcessId",
-            "MmCopyMemory", "MmMapLockedPagesSpecifyCache",
+            "MmCopyMemory", "MmCopyVirtualMemory",
             "MmMapIoSpace", "MmMapIoSpaceEx",
-            "KeStackAttachProcess", "ObOpenObjectByPointer",
-            "ZwCreateFile",
+            "MmMapLockedPagesSpecifyCache", "MmMapLockedPages",
             "ZwMapViewOfSection", "NtMapViewOfSection",
-            "SePrivilegeCheck", "PsReferencePrimaryToken"
+            "KeStackAttachProcess"
+        };
+
+        private static readonly HashSet<string> Tier2Imports = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "ObOpenObjectByPointer",
+            "ObUnRegisterCallbacks", "CmUnRegisterCallback",
+            "PsSetCreateProcessNotifyRoutineEx", "PsSetCreateProcessNotifyRoutine",
+            "PsSetLoadImageNotifyRoutine", "PsSetCreateThreadNotifyRoutine",
+            "FltUnregisterFilter",
+            "PsReferencePrimaryToken", "PsImpersonateClient",
+            "ZwCreateFile", "ZwWriteFile"
         };
 
         public static void AssessRisk(DriverResult dr, SystemProtection sysStatus)
@@ -885,7 +847,6 @@ namespace BYOVDHunter
             }
 
             bool hasLolOrBlocklist = dr.LolMatch != null || dr.BlocklistMatch != null;
-
             if (hasLolOrBlocklist)
             {
                 if (dr.IsLoaded)
@@ -907,49 +868,33 @@ namespace BYOVDHunter
                 return;
             }
 
-            bool hasDeviceExposure = dr.Devices.Count > 0 ||
-                dr.DangerousImports.Any(i =>
-                    i.FunctionName.Equals("IoCreateDevice", StringComparison.OrdinalIgnoreCase) ||
-                    i.FunctionName.Equals("IoCreateSymbolicLink", StringComparison.OrdinalIgnoreCase));
+            bool hasDeviceExposure = dr.Devices.Count > 0 || dr.HasDeviceCreation;
 
-            bool hasCriticalDirect = dr.DangerousImports.Any(i =>
-                i.Reachability == Reachability.Direct && CriticalImports.Contains(i.FunctionName));
+            bool hasTier1Direct = dr.DangerousImports.Any(i =>
+                i.Reachability == Reachability.Direct && Tier1Imports.Contains(i.FunctionName));
+            bool hasTier1Indirect = dr.DangerousImports.Any(i =>
+                i.Reachability == Reachability.Indirect && Tier1Imports.Contains(i.FunctionName) &&
+                i.Taint != TaintStatus.NotTainted);
+            bool hasTier2Direct = dr.DangerousImports.Any(i =>
+                i.Reachability == Reachability.Direct && Tier2Imports.Contains(i.FunctionName));
+            bool hasAnyTierDirect = hasTier1Direct || hasTier2Direct;
 
-            var reachableImports = dr.DangerousImports.Where(i =>
-                i.Reachability == Reachability.Direct || i.Reachability == Reachability.Indirect).ToList();
-
-            bool onlyZwClose = reachableImports.Count > 0 &&
-                reachableImports.All(i => i.FunctionName.Equals("ZwClose", StringComparison.OrdinalIgnoreCase));
-
-            if (onlyZwClose)
-            {
-                dr.Risk = RiskLevel.Info;
-                dr.RiskReason = "Only ZwClose reachable (generic import)";
-                return;
-            }
-
-            if (dr.IsMicrosoftSigned && !hasCriticalDirect)
+            if (dr.IsMicrosoftSigned && !hasAnyTierDirect)
             {
                 dr.Risk = dr.DangerousImports.Count > 0 ? RiskLevel.Medium : RiskLevel.Info;
-                dr.RiskReason = "Microsoft signed, no critical import DIRECT";
+                dr.RiskReason = "Microsoft signed, no Tier 1/Tier 2 import DIRECT";
                 return;
             }
-
-            bool hasCriticalIndirectLive = dr.DangerousImports.Any(i =>
-                i.Reachability == Reachability.Indirect &&
-                CriticalImports.Contains(i.FunctionName) &&
-                i.Taint != TaintStatus.NotTainted);
 
             bool hasMethodNeither = dr.IoctlCodes.Any(c => c.Method == 3);
             bool noValidation = dr.Dispatch != null &&
                 dr.Dispatch.BufferValidation == BufferValidation.NoValidation;
-            bool basicValidation = dr.Dispatch != null &&
-                dr.Dispatch.BufferValidation == BufferValidation.BasicValidation;
+            bool hasHandlerFound = dr.Dispatch != null && dr.Dispatch.DeviceControlHandlerRva != 0;
 
-            if (hasCriticalDirect && hasDeviceExposure && (hasMethodNeither || noValidation) && dr.IsLoaded)
+            if (hasTier1Direct && hasDeviceExposure && (hasMethodNeither || noValidation) && dr.IsLoaded)
             {
                 dr.Risk = RiskLevel.Critical;
-                dr.RiskReason = "Critical import DIRECT + device exposure + weak validation - LOADED";
+                dr.RiskReason = "Tier 1 DIRECT + device exposure + weak validation - LOADED";
                 dr.Impact = BuildImpactString(dr);
                 dr.ExploitUse = BuildExploitUse(dr);
                 if (dr.Dispatch != null && !dr.Dispatch.HasPreviousModeCheck)
@@ -957,40 +902,43 @@ namespace BYOVDHunter
                 return;
             }
 
-            if (hasCriticalIndirectLive && hasDeviceExposure && dr.IsLoaded)
+            if (hasTier1Indirect && hasDeviceExposure && dr.IsLoaded)
             {
                 dr.Risk = RiskLevel.High;
-                dr.RiskReason = "Critical import INDIRECT + device exposure - LOADED";
+                dr.RiskReason = "Tier 1 INDIRECT + device exposure - LOADED";
                 dr.Impact = BuildImpactString(dr);
                 dr.ExploitUse = BuildExploitUse(dr);
                 return;
             }
 
-            if (hasCriticalDirect && hasDeviceExposure && !dr.IsLoaded)
+            if (hasTier1Direct && hasDeviceExposure && !dr.IsLoaded)
             {
                 dr.Risk = RiskLevel.High;
-                dr.RiskReason = "Critical import DIRECT + device exposure - on disk";
+                dr.RiskReason = "Tier 1 DIRECT + device exposure - on disk";
                 dr.Impact = BuildImpactString(dr);
                 dr.ExploitUse = BuildExploitUse(dr) + " (requires load)";
                 return;
             }
 
-            if (hasCriticalDirect && dr.IsLoaded && basicValidation)
+            if (hasTier2Direct && hasDeviceExposure && dr.IsLoaded)
             {
                 dr.Risk = RiskLevel.High;
-                dr.RiskReason = "Critical import DIRECT + partial validation - LOADED";
+                dr.RiskReason = "Tier 2 DIRECT + device exposure - LOADED";
                 dr.Impact = BuildImpactString(dr);
                 dr.ExploitUse = BuildExploitUse(dr);
                 return;
             }
 
-            bool hasDangerousImports = dr.DangerousImports.Count > 0;
-            bool onlyGenericImports = hasDangerousImports &&
-                dr.DangerousImports.All(i =>
-                    i.FunctionName.Equals("ZwClose", StringComparison.OrdinalIgnoreCase) ||
-                    i.FunctionName.Equals("IoCreateDevice", StringComparison.OrdinalIgnoreCase));
+            if (!dr.IsSigned && dr.IsLoaded && hasDeviceExposure && hasHandlerFound)
+            {
+                dr.Risk = RiskLevel.High;
+                dr.RiskReason = "Unsigned + loaded + device exposure + handler found";
+                dr.Impact = "Unsigned driver with IOCTL handler";
+                dr.ExploitUse = "BYOVD";
+                return;
+            }
 
-            if (hasDangerousImports && !onlyGenericImports && hasDeviceExposure)
+            if (dr.DangerousImports.Count > 0 && hasDeviceExposure)
             {
                 dr.Risk = RiskLevel.Medium;
                 dr.RiskReason = dr.IsLoaded
@@ -999,21 +947,21 @@ namespace BYOVDHunter
                 return;
             }
 
-            if (hasDangerousImports && !onlyGenericImports && dr.IsLoaded)
+            if (dr.DangerousImports.Count > 0 && dr.IsLoaded)
             {
                 dr.Risk = RiskLevel.Medium;
                 dr.RiskReason = "Dangerous imports + loaded (no device exposure)";
                 return;
             }
 
-            if (hasDangerousImports && !onlyGenericImports)
+            if (dr.DangerousImports.Count > 0)
             {
                 dr.Risk = RiskLevel.Low;
                 dr.RiskReason = "Dangerous imports (not loaded, no device exposure)";
                 return;
             }
 
-            if (!dr.IsSigned && !hasDangerousImports)
+            if (!dr.IsSigned)
             {
                 dr.Risk = RiskLevel.Low;
                 dr.RiskReason = "Unsigned driver";

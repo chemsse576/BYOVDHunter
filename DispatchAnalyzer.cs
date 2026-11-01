@@ -132,6 +132,15 @@ namespace BYOVDHunter
                         level1.Add(sub);
                 }
 
+                var level2 = new HashSet<uint>();
+                foreach (uint rva in level1)
+                {
+                    int off = PeParser.RvaToOffset(rva, headers.Sections);
+                    if (off < 0 || off >= data.Length) continue;
+                    foreach (uint sub in CollectE8CallTargets(data, off, 2048, headers))
+                        level2.Add(sub);
+                }
+
                 var funcLevel = new Dictionary<int, int>();
                 funcLevel[handlerOff] = 0;
                 foreach (uint rva in level0)
@@ -143,6 +152,11 @@ namespace BYOVDHunter
                 {
                     int off = PeParser.RvaToOffset(rva, headers.Sections);
                     if (off >= 0 && !funcLevel.ContainsKey(off)) funcLevel[off] = 2;
+                }
+                foreach (uint rva in level2)
+                {
+                    int off = PeParser.RvaToOffset(rva, headers.Sections);
+                    if (off >= 0 && !funcLevel.ContainsKey(off)) funcLevel[off] = 3;
                 }
 
                 var sortedFuncOffsets = funcLevel.Keys.OrderBy(k => k).ToList();

@@ -41,6 +41,7 @@ namespace BYOVDHunter
         public bool IsMicrosoftSigned { get; set; }
         public bool IsLoaded { get; set; }
         public bool IsWhitelisted { get; set; }
+        public bool HasDeviceCreation { get; set; }
         public string SourceLocation { get; set; }
 
         public List<DangerousImport> DangerousImports { get; set; }
