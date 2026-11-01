@@ -82,70 +82,140 @@ namespace BYOVDHunter
 
             try
             {
+                var dangerousIat = new Dictionary<uint, string>();
+                foreach (var kv in iatMap)
+                    if (dangerousNames.Contains(kv.Value))
+                        dangerousIat[kv.Key] = kv.Value;
+
+                if (dangerousIat.Count == 0) return reachability;
+
+                // Phase 1: Bottom-up xref — scan binary for FF 15/FF 25 referencing dangerous IAT entries
+                var importSites = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+                foreach (var name in dangerousNames)
+                    importSites[name] = new List<int>();
+
+                for (int i = 0; i < data.Length - 6; i++)
+                {
+                    if (data[i] != 0xFF || (data[i + 1] != 0x15 && data[i + 1] != 0x25)) continue;
+
+                    uint iatRva;
+                    if (headers.IsPe32Plus)
+                    {
+                        int disp = BitConverter.ToInt32(data, i + 2);
+                        uint instrRva = PeParser.OffsetToRva(i, headers.Sections);
+                        if (instrRva == 0) continue;
+                        iatRva = (uint)(instrRva + 6 + disp);
+                    }
+                    else
+                    {
+                        uint absAddr = BitConverter.ToUInt32(data, i + 2);
+                        if (absAddr <= headers.ImageBase) continue;
+                        iatRva = (uint)(absAddr - headers.ImageBase);
+                    }
+
+                    if (dangerousIat.TryGetValue(iatRva, out string name))
+                        importSites[name].Add(i);
+                }
+
+                // Phase 2: Build reachable function map from handler
                 int handlerOff = PeParser.RvaToOffset(handlerRva, headers.Sections);
                 if (handlerOff < 0) return reachability;
 
-                var level0Calls = FindCallTargets(data, handlerOff, 4096, headers);
+                var level0 = CollectE8CallTargets(data, handlerOff, 8192, headers);
 
-                foreach (var call in level0Calls)
+                var level1 = new HashSet<uint>();
+                foreach (uint rva in level0)
                 {
-                    if (call.IsIatCall && iatMap.ContainsKey(call.TargetRva))
-                    {
-                        string name = iatMap[call.TargetRva];
-                        if (dangerousNames.Contains(name))
-                            reachability[name] = Reachability.Direct;
-                    }
+                    int off = PeParser.RvaToOffset(rva, headers.Sections);
+                    if (off < 0 || off >= data.Length) continue;
+                    foreach (uint sub in CollectE8CallTargets(data, off, 4096, headers))
+                        level1.Add(sub);
                 }
 
-                foreach (var call in level0Calls)
+                var funcLevel = new Dictionary<int, int>();
+                funcLevel[handlerOff] = 0;
+                foreach (uint rva in level0)
                 {
-                    if (call.IsIatCall) continue;
-                    int targetOff = PeParser.RvaToOffset(call.TargetRva, headers.Sections);
-                    if (targetOff < 0 || targetOff >= data.Length) continue;
-
-                    var level1Calls = FindCallTargets(data, targetOff, 2048, headers);
-                    foreach (var sub in level1Calls)
-                    {
-                        if (sub.IsIatCall && iatMap.ContainsKey(sub.TargetRva))
-                        {
-                            string name = iatMap[sub.TargetRva];
-                            if (dangerousNames.Contains(name) && reachability[name] != Reachability.Direct)
-                                reachability[name] = Reachability.Indirect;
-                        }
-                    }
-
-                    foreach (var sub in level1Calls)
-                    {
-                        if (sub.IsIatCall) continue;
-                        int subOff = PeParser.RvaToOffset(sub.TargetRva, headers.Sections);
-                        if (subOff < 0 || subOff >= data.Length) continue;
-
-                        var level2Calls = FindCallTargets(data, subOff, 1024, headers);
-                        foreach (var subsub in level2Calls)
-                        {
-                            if (subsub.IsIatCall && iatMap.ContainsKey(subsub.TargetRva))
-                            {
-                                string name = iatMap[subsub.TargetRva];
-                                if (dangerousNames.Contains(name) &&
-                                    reachability[name] != Reachability.Direct &&
-                                    reachability[name] != Reachability.Indirect)
-                                    reachability[name] = Reachability.Indirect;
-                            }
-                        }
-                    }
+                    int off = PeParser.RvaToOffset(rva, headers.Sections);
+                    if (off >= 0 && !funcLevel.ContainsKey(off)) funcLevel[off] = 1;
+                }
+                foreach (uint rva in level1)
+                {
+                    int off = PeParser.RvaToOffset(rva, headers.Sections);
+                    if (off >= 0 && !funcLevel.ContainsKey(off)) funcLevel[off] = 2;
                 }
 
-                foreach (var key in reachability.Keys.ToList())
+                var sortedFuncOffsets = funcLevel.Keys.OrderBy(k => k).ToList();
+
+                // Phase 3: Classify each import by checking call site containment
+                foreach (var name in dangerousNames)
                 {
-                    if (reachability[key] == Reachability.Unknown)
+                    var sites = importSites[name];
+                    if (sites.Count == 0)
                     {
-                        bool inIat = iatMap.Values.Contains(key);
-                        if (inIat) reachability[key] = Reachability.NotReachable;
+                        reachability[name] = Reachability.NotReachable;
+                        continue;
                     }
+
+                    Reachability best = Reachability.NotReachable;
+                    foreach (int siteOff in sites)
+                    {
+                        int idx = sortedFuncOffsets.BinarySearch(siteOff);
+                        if (idx < 0) idx = ~idx - 1;
+                        if (idx < 0) continue;
+
+                        int funcOff = sortedFuncOffsets[idx];
+                        if (siteOff - funcOff > 16384) continue;
+
+                        int level = funcLevel[funcOff];
+                        if (level == 0)
+                        {
+                            best = Reachability.Direct;
+                            break;
+                        }
+                        if (best != Reachability.Direct)
+                            best = Reachability.Indirect;
+                    }
+                    reachability[name] = best;
                 }
             }
             catch { }
             return reachability;
+        }
+
+        private static HashSet<uint> CollectE8CallTargets(byte[] data, int startOffset,
+            int maxScan, PeParser.PeHeaders headers)
+        {
+            var targets = new HashSet<uint>();
+            int end = Math.Min(startOffset + maxScan, data.Length - 5);
+            for (int i = startOffset; i < end; i++)
+            {
+                if (data[i] == 0xE8)
+                {
+                    int disp = BitConverter.ToInt32(data, i + 1);
+                    uint instrRva = PeParser.OffsetToRva(i, headers.Sections);
+                    if (instrRva > 0)
+                    {
+                        uint target = (uint)(instrRva + 5 + disp);
+                        if (target > 0x1000 && target < 0x10000000)
+                            targets.Add(target);
+                    }
+                    i += 4;
+                }
+                else if (data[i] == 0xE9)
+                {
+                    int disp = BitConverter.ToInt32(data, i + 1);
+                    uint instrRva = PeParser.OffsetToRva(i, headers.Sections);
+                    if (instrRva > 0)
+                    {
+                        uint target = (uint)(instrRva + 5 + disp);
+                        if (target > 0x1000 && target < 0x10000000)
+                            targets.Add(target);
+                    }
+                    break;
+                }
+            }
+            return targets;
         }
 
         public static TaintStatus AnalyzeTaint(byte[] data, int callSiteFileOffset,
